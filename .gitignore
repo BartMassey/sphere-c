@@ -1,0 +1,46 @@
+# Python environments and generated files
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+
+# Local credentials and environment
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+
+# Acquired application and package artifacts
+apk/
+*.apk
+*.deb
+*.xapk
+
+# Captures, decoded exports, and runtime logs
+*.btsnoop
+*.pcap
+*.pcapng
+*.log
+proxy_pdus.csv
+phone_external/
+
+# Local extracted dependencies and distribution payloads
+/tools/bluez-meshd-root/
+/vendor/
+
+# Bluetooth Mesh runtime state and secrets
+mesh-lab/captures/
+mesh-lab/client-state/
+mesh-lab/daemon-state/
+mesh-lab/sphere_state*.json
+
+# App-local agent metadata
+.agents/
+.codex/
+
+# The user's global ignore file suppresses these by default.
+!.gitignore

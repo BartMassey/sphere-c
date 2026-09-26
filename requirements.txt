@@ -1,0 +1,1 @@
+btmesh[harness] @ git+https://github.com/dasimon135/ha-bluetooth-mesh.git@a8f7bbbebaeba124d7d08cb16122055074f2ef46
