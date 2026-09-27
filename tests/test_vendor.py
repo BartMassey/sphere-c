@@ -11,6 +11,7 @@ from sphere_mesh.vendor import (
     TuyaVendorController,
     VendorUnavailable,
     VendorUnsupported,
+    countdown_dp_write,
     effect_catalog,
     effect_selection,
     effect_value,
@@ -54,6 +55,17 @@ def test_vendor_write_matches_derived_effect_vector():
     assert guarded_dp_write(effect_selection("colour_2")) == bytes.fromhex(
         "c9d00701020401660402"
     )
+
+
+def test_countdown_write_uses_only_dp_101_value():
+    assert countdown_dp_write(43200) == bytes.fromhex("c9d0070165020000a8c0")
+    assert countdown_dp_write(0) == bytes.fromhex("c9d00701650200000000")
+
+
+@pytest.mark.parametrize("seconds", [-1, 43201, True, 1.0, "10", None])
+def test_countdown_write_rejects_invalid_seconds(seconds):
+    with pytest.raises(AccessError):
+        countdown_dp_write(seconds)
 
 
 def test_effect_catalog_preserves_schema_and_visible_picker():

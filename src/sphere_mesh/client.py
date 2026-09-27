@@ -47,6 +47,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         effect_command.add_argument(
             "name", help="effect name, such as flame or colour_2"
         )
+    countdown = commands.add_parser(
+        "countdown", help="read, set, or cancel the panel countdown"
+    )
+    countdown_commands = countdown.add_subparsers(dest="operation", required=True)
+    countdown_commands.add_parser("get", help="read remaining countdown seconds")
+    countdown_commands.add_parser("cancel", help="set countdown to zero")
+    countdown_set = countdown_commands.add_parser(
+        "set", help="set countdown seconds"
+    )
+    countdown_set.add_argument("seconds", type=int, metavar="SECONDS")
     return parser.parse_args(argv)
 
 
@@ -64,6 +74,9 @@ async def async_main(args: argparse.Namespace) -> int:
             if args.operation in ("set", "select", "activate")
             else {}
         )
+    elif args.command == "countdown":
+        method = f"countdown.{args.operation}"
+        params = {"seconds": args.seconds} if args.operation == "set" else {}
     else:
         method, params = "lighting", {"command": args.operation}
     try:

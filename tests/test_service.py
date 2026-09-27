@@ -228,6 +228,67 @@ async def test_effect_activate_stops_when_mode_write_times_out():
 
 
 @pytest.mark.parametrize(
+    "method,params,expected",
+    [
+        ("countdown.set", {"seconds": 60}, 60),
+        ("countdown.cancel", {}, 0),
+    ],
+)
+async def test_countdown_write_accepts_empty_ack(method, params, expected):
+    node = Mock()
+    node.received = deque()
+    ack = message(OP_TUYA_DP_DATA, b"\x01")
+    node.request = AsyncMock(return_value=ack)
+    service, _ = runtime(node)
+    result = await service.handle(method, params)
+    assert result["requested_seconds"] == expected
+    assert result["acknowledged"] is True
+    assert result["reported_seconds"] is None
+    node.request.assert_awaited_once_with(
+        0x0118, bytes.fromhex("c9d007016502") + expected.to_bytes(4, "big"),
+        OP_TUYA_DP_DATA, timeout=5.0, retries=0,
+    )
+
+
+async def test_countdown_get_extracts_dp_101_from_snapshot():
+    node = Mock()
+    node.received = deque()
+    response = message(
+        OP_TUYA_DP_DATA, bytes.fromhex("0102040165020000003c")
+    )
+    node.request = AsyncMock(return_value=response)
+    service, _ = runtime(node)
+    result = await service.handle("countdown.get", {})
+    assert result["seconds"] == 60
+    assert result["snapshot"]["requested_dp_ids"] == [101]
+    node.request.assert_awaited_once_with(
+        0x0118, bytes.fromhex("ccd007010165"), OP_TUYA_DP_DATA,
+        timeout=5.0,
+    )
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        "0165020000003d",
+        "01650101",
+        "0165020000a8c1",
+        "0107020000003c",
+    ],
+)
+async def test_countdown_write_rejects_bad_echo(response):
+    node = Mock()
+    node.received = deque()
+    node.request = AsyncMock(
+        return_value=message(OP_TUYA_DP_DATA, bytes.fromhex(response))
+    )
+    service, _ = runtime(node)
+    with pytest.raises(ApiRequestError) as failure:
+        await service.handle("countdown.set", {"seconds": 60})
+    assert failure.value.code == "protocol_error"
+
+
+@pytest.mark.parametrize(
     ("method", "params", "code"),
     [
         ("wat", {}, "unknown_method"),
@@ -242,6 +303,11 @@ async def test_effect_activate_stops_when_mode_write_times_out():
         ("effect.set", {"name": "colour_5"}, "invalid_params"),
         ("effect.set", {"name": "colour_32"}, "invalid_params"),
         ("effect.set", {"name": 2}, "invalid_params"),
+        ("countdown.get", {"seconds": 2}, "invalid_params"),
+        ("countdown.cancel", {"seconds": 0}, "invalid_params"),
+        ("countdown.set", {"seconds": True}, "invalid_params"),
+        ("countdown.set", {"seconds": 43201}, "invalid_params"),
+        ("countdown.set", {"seconds": -1}, "invalid_params"),
     ],
 )
 async def test_runtime_rejects_invalid_requests(method, params, code):

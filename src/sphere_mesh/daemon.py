@@ -33,6 +33,7 @@ from .transport import (
     open_mesh_proxy_session,
 )
 from .vendor import (
+    TuyaDpType,
     TuyaVendorController,
     VendorUnavailable,
     VendorUnsupported,
@@ -196,6 +197,7 @@ class SphereRuntime:
         if method not in (
             "control", "lighting", "vendor.read", "effect.get",
             "effect.set", "effect.select", "effect.activate",
+            "countdown.get", "countdown.set", "countdown.cancel",
         ):
             raise ApiRequestError("unknown_method", f"unknown method: {method}")
         async with self._command_lock:
@@ -210,6 +212,8 @@ class SphereRuntime:
                 return await self._lighting(session, params)
             if method == "vendor.read":
                 return await self._vendor_read(session, params)
+            if method.startswith("countdown."):
+                return await self._countdown(session, method, params)
             return await self._effect(session, method, params)
 
     def health(self) -> dict:
@@ -332,6 +336,76 @@ class SphereRuntime:
                 }
                 for record in data.records
             ],
+        }
+
+    async def _countdown(self, session, method: str, params: dict) -> dict:
+        if method == "countdown.set":
+            seconds = params.get("seconds")
+            if (
+                set(params) != {"seconds"}
+                or type(seconds) is not int
+                or not 0 <= seconds <= 43200
+            ):
+                raise ApiRequestError(
+                    "invalid_params",
+                    "countdown.set requires integer seconds from 0..43200",
+                )
+        else:
+            if params:
+                raise ApiRequestError(
+                    "invalid_params", f"{method} does not accept parameters"
+                )
+            seconds = 0
+        controller = TuyaVendorController(
+            session.node, self._state.get("composition", {})
+        )
+        try:
+            data = (
+                await controller.read([101]) if method == "countdown.get"
+                else await controller.write_countdown(seconds)
+            )
+        except VendorUnsupported as exc:
+            raise ApiRequestError("unsupported", str(exc)) from exc
+        except VendorUnavailable as exc:
+            raise ApiRequestError("unavailable", str(exc)) from exc
+        except AccessError as exc:
+            raise ApiRequestError("protocol_error", str(exc)) from exc
+        snapshot = self._vendor_snapshot(data, [101])
+        reported = None
+        for record in data.records:
+            if record.dp_id != 101:
+                if method != "countdown.get":
+                    raise ApiRequestError(
+                        "protocol_error",
+                        "countdown write returned an unexpected datapoint",
+                    )
+                continue
+            value = record.value
+            if (
+                record.dp_type is not TuyaDpType.VALUE
+                or type(value) is not int
+                or not 0 <= value <= 43200
+            ):
+                raise ApiRequestError(
+                    "protocol_error", "invalid DP 101 countdown response"
+                )
+            if method != "countdown.get" and value != seconds:
+                raise ApiRequestError(
+                    "protocol_error",
+                    "Sphere reported a different DP 101 countdown than requested",
+                )
+            reported = value
+        if method == "countdown.get":
+            if reported is None:
+                raise ApiRequestError(
+                    "protocol_error", "DP 101 missing from countdown response"
+                )
+            return {"seconds": reported, "snapshot": snapshot}
+        return {
+            "requested_seconds": seconds,
+            "acknowledged": True,
+            "reported_seconds": reported,
+            "response": snapshot,
         }
 
     async def _effect(self, session, method: str, params: dict) -> dict:

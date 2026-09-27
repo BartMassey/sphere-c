@@ -16,3 +16,13 @@ def test_effect_cli_parses_named_operations():
         )
     args = parse_args(["effect", "get"])
     assert (args.command, args.operation) == ("effect", "get")
+
+
+def test_countdown_cli_parses_named_operations():
+    for operation in ("get", "cancel"):
+        args = parse_args(["countdown", operation])
+        assert (args.command, args.operation) == ("countdown", operation)
+    args = parse_args(["countdown", "set", "43200"])
+    assert (args.command, args.operation, args.seconds) == (
+        "countdown", "set", 43200,
+    )

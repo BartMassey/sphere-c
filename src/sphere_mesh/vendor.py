@@ -135,6 +135,12 @@ def guarded_dp_write(values: dict[int, int]) -> bytes:
     return tuya_dp_write(records)
 
 
+def countdown_dp_write(seconds: int) -> bytes:
+    if type(seconds) is not int or not 0 <= seconds <= 43200:
+        raise AccessError("countdown seconds must be an integer from 0..43200")
+    return tuya_dp_write([tuya_dp_record(101, TuyaDpType.VALUE, seconds)])
+
+
 def _u8(name: str, value: int) -> int:
     if not 0 <= value <= 0xFF:
         raise AccessError(f"{name} out of uint8 range: {value}")
@@ -308,6 +314,9 @@ class TuyaVendorController:
 
     async def write(self, values: dict[int, int]) -> TuyaDpData:
         return await self._request(guarded_dp_write(values), "Write")
+
+    async def write_countdown(self, seconds: int) -> TuyaDpData:
+        return await self._request(countdown_dp_write(seconds), "Write")
 
     async def _request(self, payload: bytes, operation: str) -> TuyaDpData:
         address = vendor_model_element(self._composition)
