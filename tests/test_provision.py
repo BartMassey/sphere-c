@@ -1,5 +1,6 @@
 import json
 import stat
+from types import SimpleNamespace
 
 import pytest
 
@@ -46,6 +47,21 @@ def test_run_modes_are_mutually_exclusive(argv):
 def test_local_transport_is_default():
     args = sphere.parse_args(["--init-only"])
     assert args.transport == "local"
+
+
+def test_pick_device_prefers_active_address_for_duplicate_uuid():
+    uuid = "00112233445566778899aabbccddeeff"
+    state = {
+        "active_device": "0x0118",
+        "devices": {
+            "0x0112": {"uuid": uuid},
+            "0x0118": {"uuid": uuid},
+        },
+    }
+
+    selected = sphere.pick_device(state, SimpleNamespace(device_uuid=uuid))
+
+    assert selected == 0x0118
 
 
 def test_gatt_bearer_selects_proxy_characteristics_by_handle():

@@ -22,13 +22,27 @@ from btmesh.bearer import (
     proxy_candidates_from_discoveries,
     unprovisioned_from_discoveries,
 )
+from btmesh.crypto import aes_ecb, k1, s1
 from btmesh.node import MeshNode
-from btmesh.proxy_pdu import MSG_TYPE_NETWORK_PDU
+from btmesh.proxy_config import FILTER_ACCEPT_LIST, add_addresses, set_filter_type
+from btmesh.proxy_pdu import MSG_TYPE_NETWORK_PDU, MSG_TYPE_PROXY_CONFIG
 from btmesh.pump import BearerPump
 
 logger = logging.getLogger("sphere-transport")
 
 GATT_SESSION_ATTEMPTS = 3
+
+
+def node_identity_matches(
+    netkey: bytes, unicast: int, parameter: bytes
+) -> bool:
+    if len(parameter) != 16 or not 0x0001 <= unicast <= 0x7FFF:
+        return False
+    advertised_hash = parameter[:8]
+    random = parameter[8:]
+    identity_key = k1(netkey, s1(b"nkik"), b"id128\x01")
+    block = bytes(6) + random + unicast.to_bytes(2, "big")
+    return aes_ecb(identity_key, block)[8:] == advertised_hash
 
 
 def _characteristic_for_service(client: Any, service_uuid: str, char_uuid: str):
@@ -126,6 +140,8 @@ async def find_proxy_node(
     poll_interval: float = 1.0,
     *,
     stop_after: bool = True,
+    identity_netkey: bytes | None = None,
+    node_addresses: tuple[int, ...] = (),
 ):
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
@@ -153,6 +169,21 @@ async def find_proxy_node(
                     candidate.identification_type == IDENTIFICATION_NETWORK_ID
                     and candidate.parameter == network_id
                 ):
+                    return candidate, list(candidates.values())
+                if (
+                    candidate.identification_type == IDENTIFICATION_NODE_IDENTITY
+                    and identity_netkey is not None
+                    and any(
+                        node_identity_matches(
+                            identity_netkey, address, candidate.parameter
+                        )
+                        for address in node_addresses
+                    )
+                ):
+                    logger.info(
+                        "verified Node Identity from %s",
+                        candidate.device.address,
+                    )
                     return candidate, list(candidates.values())
             if loop.time() >= deadline:
                 return None, list(candidates.values())
@@ -238,15 +269,53 @@ class MeshProxySession:
         self.pump = pump
         self.node = node
         self._closed = False
+        self._lost = asyncio.Event()
+        self._recorded_failure: BaseException | None = None
+        self._loop = asyncio.get_running_loop()
+        setter = getattr(client, "set_disconnected_callback", None)
+        if callable(setter):
+            setter(self._on_disconnected)
+
+    def _on_disconnected(self, _client) -> None:
+        failure = BearerError("GATT connection closed")
+        try:
+            self._loop.call_soon_threadsafe(self._mark_lost, failure)
+        except RuntimeError:
+            pass
+
+    def _mark_lost(self, failure: BaseException) -> None:
+        if self._recorded_failure is None:
+            self._recorded_failure = failure
+        self._lost.set()
 
     @property
     def failure(self) -> BaseException | None:
-        return self.pump.failure or getattr(self.bearer, "failure", None)
+        return (
+            self._recorded_failure
+            or self.pump.failure
+            or getattr(self.bearer, "failure", None)
+        )
+
+    async def wait_lost(self, poll_interval: float = 0.25) -> BaseException:
+        while True:
+            failure = self.failure
+            if failure is not None:
+                self._mark_lost(failure)
+                return failure
+            if getattr(self.client, "is_connected", True) is False:
+                failure = BearerError("GATT connection is no longer connected")
+                self._mark_lost(failure)
+                return failure
+            try:
+                await asyncio.wait_for(self._lost.wait(), timeout=poll_interval)
+            except TimeoutError:
+                continue
 
     async def close(self) -> None:
         if self._closed:
             return
         self._closed = True
+        self.node.close()
         await self.pump.stop()
         await self.bearer.stop()
         await disconnect_quietly(self.client)
@@ -281,11 +350,18 @@ async def open_mesh_proxy_session(
         on_message=dispatch,
     )
     pump = BearerPump(bearer, MSG_TYPE_NETWORK_PDU)
-    pump.on_error = lambda exc: logger.error("network TX failed: %s", exc)
+    session_holder: list[MeshProxySession] = []
+
+    def pump_failed(exc: BaseException) -> None:
+        logger.error("network TX failed: %s", exc)
+        if session_holder:
+            session_holder[0]._mark_lost(exc)
+
+    pump.on_error = pump_failed
 
     def send_network_pdu(raw: bytes) -> None:
-        pump.put(raw)
         persist_seq(node.ctx.seq)
+        pump.put(raw)
 
     try:
         node = MeshNode(
@@ -310,7 +386,16 @@ async def open_mesh_proxy_session(
 
         session_handler.append(on_message)
         pump.start()
-        return MeshProxySession(client, bearer, pump, node)
+        session = MeshProxySession(client, bearer, pump, node)
+        session_holder.append(session)
+        for message in (
+            set_filter_type(FILTER_ACCEPT_LIST),
+            add_addresses([provisioner_addr]),
+        ):
+            raw = node.build_proxy_config_pdu(message)
+            persist_seq(node.ctx.seq)
+            pump.put(raw, msg_type=MSG_TYPE_PROXY_CONFIG)
+        return session
     except BaseException:
         await pump.stop()
         await bearer.stop()

@@ -10,18 +10,15 @@ a JSON file; SEQ is saved after every network PDU send because a replayed SEQ
 after a crash would be silently ignored by the node.
 
 Known Phase 0 limitations: strict IV Index match (no IV-update recovery), no
-segment-ack TX (peers retransmit segmented responses — harmless for the short
-statuses used here), no replay cache.
+reliable retransmission of missing outbound segments, no replay cache.
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
-import json
 import logging
 import os
-import secrets
 import sys
 import time
 from pathlib import Path
@@ -53,7 +50,7 @@ from btmesh.access import (
     parse_light_lightness_status,
 )
 from btmesh.bearer import (
-    IDENTIFICATION_NODE_IDENTITY,
+    IDENTIFICATION_NETWORK_ID,
     BearerError,
     EsphomeTransport,
 )
@@ -75,6 +72,13 @@ from .transport import (
     open_mesh_proxy_session,
     scan_unprovisioned,
 )
+from .state import (
+    StateError,
+    StateLockedError,
+    StateStore,
+    load_or_create_state,
+    save_state,
+)
 
 logger = logging.getLogger("sphere-provision")
 
@@ -85,8 +89,7 @@ PROVISIONING_TIMEOUT_S = 60.0
 
 LIMITATIONS_NOTE = (
     "Known Phase 0 limitations: strict IV Index match (no IV-update recovery); "
-    "no segment-ack TX, so segmented RESPONSES from the node are retransmitted "
-    "by the peer (harmless for our short statuses); no replay cache."
+    "no reliable retransmission of missing outbound segments; no replay cache."
 )
 
 CONFIG_TIMEOUT_CAUSES = [
@@ -206,78 +209,6 @@ def setup_logging(verbose: bool) -> None:
     for noisy in ("aioesphomeapi", "habluetooth", "bleak", "bleak_esphome"):
         logging.getLogger(noisy).setLevel(logging.INFO if verbose else logging.WARNING)
     logger.info("---- provision_and_toggle run started ----")
-
-
-_STATE_FIELD_TYPES = {
-    "netkey": str,
-    "appkey": str,
-    "iv_index": int,
-    "netkey_index": int,
-    "appkey_index": int,
-    "provisioner_addr": int,
-    "next_unicast": int,
-    "seq": int,
-    "devices": dict,
-}
-
-
-def _validate_state(state: dict) -> None:
-    for field, expected in _STATE_FIELD_TYPES.items():
-        if not isinstance(state.get(field), expected):
-            raise ValueError(
-                f"field {field!r} is missing or not a {expected.__name__}"
-            )
-    for key_field in ("netkey", "appkey"):
-        if len(bytes.fromhex(state[key_field])) != 16:  # ValueError on bad hex
-            raise ValueError(f"field {key_field!r} is not 16 bytes of hex")
-
-
-def load_or_create_state(path: Path) -> dict:
-    if path.exists():
-        # The triage texts invite hand-editing this file, so a typo must come
-        # back as a diagnostic, not a raw traceback.
-        try:
-            state = json.loads(path.read_text())
-            _validate_state(state)
-        except (ValueError, TypeError) as exc:
-            raise Phase0Failure(
-                "startup",
-                f"state file {path} is unreadable: {exc}",
-                [
-                    "fix the field named in the error (the file is hand-editable "
-                    "JSON), or",
-                    "delete the file to start over with fresh keys — the node "
-                    "must then be factory-reset and reprovisioned",
-                ],
-            ) from exc
-        logger.info(
-            "loaded state %s (seq=%d, %d device(s))",
-            path, state["seq"], len(state["devices"]),
-        )
-        return state
-    state = {
-        "netkey": secrets.token_bytes(16).hex(),
-        "appkey": secrets.token_bytes(16).hex(),
-        "iv_index": 0,
-        "netkey_index": 0,
-        "appkey_index": 0,
-        "provisioner_addr": 0x0001,
-        "next_unicast": 0x0100,
-        "seq": 0,
-        "devices": {},  # {"0x0002": {"device_key", "uuid", "address"}}
-    }
-    save_state(path, state)
-    logger.info("created fresh state %s (new netkey/appkey)", path)
-    return state
-
-
-def save_state(path: Path, state: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(state, indent=2))
-    os.chmod(tmp, 0o600)
-    tmp.replace(path)
-    os.chmod(path, 0o600)
 
 
 def print_diagnostic(phase: str, exc: BaseException, causes: list[str]) -> None:
@@ -486,6 +417,7 @@ async def provision(args, state: dict, state_path: Path, transport) -> int:
         "uuid": target.uuid.hex(),
         "address": target.device.address,
     }
+    state["active_device"] = f"0x{unicast:04x}"
     # Advance past every element of the node so a future device in this state
     # file cannot overlap the lamp's secondary elements.
     state["next_unicast"] = unicast + max(1, prov.capabilities.num_elements)
@@ -505,15 +437,22 @@ def pick_device(state: dict, args) -> int:
             ["run once without --toggle-only to provision first"],
         )
     if args.device_uuid:
-        for addr_hex, entry in state["devices"].items():
-            if entry["uuid"] == args.device_uuid:
-                return int(addr_hex, 16)
+        matches = [
+            addr_hex
+            for addr_hex, entry in state["devices"].items()
+            if entry["uuid"] == args.device_uuid
+        ]
+        active = state.get("active_device")
+        if active in matches:
+            return int(active, 16)
+        if matches:
+            return int(matches[-1], 16)
         raise Phase0Failure(
             "startup",
             f"no device with UUID {args.device_uuid} in the state file",
             ["check the state file's devices table"],
         )
-    addr_hex = next(reversed(state["devices"]))  # most recently provisioned
+    addr_hex = state.get("active_device") or next(reversed(state["devices"]))
     return int(addr_hex, 16)
 
 
@@ -526,25 +465,20 @@ async def _find_proxy_target(state: dict, transport, unicast: int):
         f"(0x1828, Network ID {network_id.hex()})..."
     )
     match, candidates = await find_proxy_node(
-        scanner, network_id, timeout=SCAN_PROXY_S, stop_after=False
+        scanner,
+        network_id,
+        timeout=SCAN_PROXY_S,
+        stop_after=False,
+        identity_netkey=netkey,
+        node_addresses=(unicast,),
     )
     if match is not None:
-        print(f"  Network ID match from {match.device.address}")
+        if match.identification_type == IDENTIFICATION_NETWORK_ID:
+            label = "Network ID match"
+        else:
+            label = "verified Node Identity"
+        print(f"  {label} from {match.device.address}")
         return match.device, scanner
-    # Single-candidate fallback ONLY for Node Identity: a type-0x00 advert
-    # with a non-matching Network ID is cryptographically proven foreign,
-    # so it must never be "assumed ours" no matter how alone it is.
-    if (
-        len(candidates) == 1
-        and candidates[0].identification_type == IDENTIFICATION_NODE_IDENTITY
-    ):
-        cand = candidates[0]
-        print(
-            f"  no Network ID match; single 0x1828 advertiser "
-            f"{cand.device.address} uses Node Identity — assuming it is our "
-            "node (identity verification needs crypto outside Phase 0 scope)"
-        )
-        return cand.device, scanner
     if candidates:
         listing = "; ".join(
             f"{c.device.address} type 0x{c.identification_type:02x} "
@@ -559,9 +493,8 @@ async def _find_proxy_target(state: dict, transport, unicast: int):
                 f"candidates seen: {listing}",
                 "type-0x00 candidates with a different Network ID are "
                 "cryptographically proven foreign (neighbor's mesh)",
-                "our node may advertise Node Identity alongside other "
-                "advertisers — rerun, or power the other networks down for "
-                "the test",
+                "Node Identity candidates did not authenticate for the active "
+                "node address and NetKey",
             ],
         )
     # Nothing advertised 0x1828 at all: capture what the airwaves DID carry.
@@ -841,7 +774,7 @@ async def read_control_state(
 
 
 async def mesh_session(
-    args, state: dict, state_path: Path, transport, unicast: int
+    args, state: dict, store: StateStore, transport, unicast: int
 ) -> None:
     """Connect the proxy, configure (unless --toggle-only), toggle. Milestone B."""
     entry = state["devices"][f"0x{unicast:04x}"]
@@ -853,8 +786,7 @@ async def mesh_session(
     print(f"Connecting Mesh Proxy to {target.address}...")
 
     def persist_seq(next_seq: int) -> None:
-        state["seq"] = next_seq
-        save_state(state_path, state)
+        store.advance_sequence(state, next_seq)
 
     try:
         session = await open_mesh_proxy_session(
@@ -909,16 +841,36 @@ async def mesh_session(
 
 async def async_main(args: argparse.Namespace) -> int:
     state_path = Path(args.state)
+    store = StateStore(state_path)
     try:
-        state = load_or_create_state(state_path)
-    except Phase0Failure as failure:
-        print_diagnostic(failure.phase, failure, failure.causes)
+        store.acquire()
+        state = store.load_or_create()
+    except (StateError, StateLockedError) as exc:
+        store.release()
+        print_diagnostic(
+            "startup",
+            exc,
+            [
+                "another process may already own this controller state",
+                "repair the named field, or reset and reprovision before "
+                "creating fresh keys",
+            ],
+        )
         return 1
+
+    logger.info(
+        "loaded state %s (seq=%d, %d device(s))",
+        state_path, state["seq"], len(state["devices"]),
+    )
 
     if args.init_only:
         print(f"Key state ready: {state_path}")
         print(f"Network ID: {k3(bytes.fromhex(state['netkey'])).hex()}")
         print("The NetKey and AppKey remain only in the mode-0600 state file.")
+        try:
+            store.save(state)
+        finally:
+            store.release()
         return 0
 
     if args.transport == "esphome":
@@ -938,6 +890,10 @@ async def async_main(args: argparse.Namespace) -> int:
                 "proxy has no free BLE connection slot",
             ],
         )
+        try:
+            store.save(state)
+        finally:
+            store.release()
         return 1
 
     try:
@@ -949,7 +905,7 @@ async def async_main(args: argparse.Namespace) -> int:
             if args.provision_only:
                 print("Stopped after provisioning as requested.")
                 return 0
-        await mesh_session(args, state, state_path, transport, unicast)
+        await mesh_session(args, state, store, transport, unicast)
         return 0
     except Phase0Failure as failure:
         print_diagnostic(failure.phase, failure, failure.causes)
@@ -962,7 +918,10 @@ async def async_main(args: argparse.Namespace) -> int:
         )
         return 1
     finally:
-        save_state(state_path, state)
+        try:
+            store.save(state)
+        finally:
+            store.release()
         try:
             await transport.stop()
         except Exception as exc:

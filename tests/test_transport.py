@@ -1,5 +1,6 @@
+import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -11,6 +12,11 @@ from sphere_mesh import transport as sphere_transport
 class FakeClient:
     def __init__(self):
         self.disconnect = AsyncMock()
+        self.is_connected = True
+        self.disconnected_callback = None
+
+    def set_disconnected_callback(self, callback):
+        self.disconnected_callback = callback
 
 
 class FakeTransport:
@@ -151,9 +157,13 @@ async def test_mesh_proxy_session_persists_seq_and_closes_once(monkeypatch):
     )
 
     session.node.send_access(0x0112, generic_onoff_get())
-    assert persisted == [11]
+    assert persisted == [11, 12, 13]
     await session.pump.flush()
-    assert len(bearer.sent) == 1
+    assert [msg_type for msg_type, _ in bearer.sent] == [
+        sphere_transport.MSG_TYPE_PROXY_CONFIG,
+        sphere_transport.MSG_TYPE_PROXY_CONFIG,
+        sphere_transport.MSG_TYPE_NETWORK_PDU,
+    ]
     assert session.failure is None
 
     await session.close()
@@ -163,6 +173,132 @@ async def test_mesh_proxy_session_persists_seq_and_closes_once(monkeypatch):
     client.disconnect.assert_awaited_once()
     open_session.assert_awaited_once()
     assert open_session.await_args.kwargs["provisioning"] is False
+
+
+async def test_mesh_proxy_session_persists_before_queueing(monkeypatch):
+    client = FakeClient()
+    bearer = FakeProxyBearer()
+    monkeypatch.setattr(
+        sphere_transport,
+        "open_gatt_session",
+        AsyncMock(return_value=(client, bearer)),
+    )
+
+    persisted = []
+
+    def fail_persistence(next_seq):
+        persisted.append(next_seq)
+        if len(persisted) == 3:
+            raise OSError("disk failed")
+
+    session = await sphere_transport.open_mesh_proxy_session(
+        object(),
+        "device",
+        netkey=bytes(16),
+        appkey=bytes.fromhex("102132435465768798a9bacbdcedfe0f"),
+        device_key=bytes.fromhex("ffeeddccbbaa99887766554433221100"),
+        iv_index=0,
+        provisioner_addr=1,
+        unicast=0x0118,
+        seq=10,
+        persist_seq=fail_persistence,
+    )
+
+    with pytest.raises(OSError, match="disk failed"):
+        session.node.send_access(0x0118, generic_onoff_get())
+    await session.pump.flush()
+    assert len(bearer.sent) == 2
+    assert all(
+        msg_type == sphere_transport.MSG_TYPE_PROXY_CONFIG
+        for msg_type, _ in bearer.sent
+    )
+    await session.close()
+
+
+async def test_mesh_proxy_session_closes_protocol_node(monkeypatch):
+    client = FakeClient()
+    bearer = FakeProxyBearer()
+    monkeypatch.setattr(
+        sphere_transport,
+        "open_gatt_session",
+        AsyncMock(return_value=(client, bearer)),
+    )
+    session = await sphere_transport.open_mesh_proxy_session(
+        object(),
+        "device",
+        netkey=bytes(16),
+        appkey=bytes.fromhex("102132435465768798a9bacbdcedfe0f"),
+        device_key=bytes.fromhex("ffeeddccbbaa99887766554433221100"),
+        iv_index=0,
+        provisioner_addr=1,
+        unicast=0x0118,
+        seq=10,
+        persist_seq=lambda _: None,
+    )
+    session.node.close = Mock()
+
+    await session.close()
+    await session.close()
+
+    session.node.close.assert_called_once_with()
+
+
+async def test_mesh_proxy_session_reports_client_disconnect(monkeypatch):
+    client = FakeClient()
+    bearer = FakeProxyBearer()
+    monkeypatch.setattr(
+        sphere_transport,
+        "open_gatt_session",
+        AsyncMock(return_value=(client, bearer)),
+    )
+    session = await sphere_transport.open_mesh_proxy_session(
+        object(),
+        "device",
+        netkey=bytes(16),
+        appkey=bytes.fromhex("102132435465768798a9bacbdcedfe0f"),
+        device_key=bytes.fromhex("ffeeddccbbaa99887766554433221100"),
+        iv_index=0,
+        provisioner_addr=1,
+        unicast=0x0118,
+        seq=10,
+        persist_seq=lambda _: None,
+    )
+
+    client.disconnected_callback(client)
+    failure = await asyncio.wait_for(session.wait_lost(), timeout=1)
+
+    assert "connection closed" in str(failure)
+    await session.close()
+
+
+async def test_mesh_proxy_session_polls_late_bearer_failure(monkeypatch):
+    client = FakeClient()
+    bearer = FakeProxyBearer()
+    monkeypatch.setattr(
+        sphere_transport,
+        "open_gatt_session",
+        AsyncMock(return_value=(client, bearer)),
+    )
+    session = await sphere_transport.open_mesh_proxy_session(
+        object(),
+        "device",
+        netkey=bytes(16),
+        appkey=bytes.fromhex("102132435465768798a9bacbdcedfe0f"),
+        device_key=bytes.fromhex("ffeeddccbbaa99887766554433221100"),
+        iv_index=0,
+        provisioner_addr=1,
+        unicast=0x0118,
+        seq=10,
+        persist_seq=lambda _: None,
+    )
+    bearer.failure = BearerError("notification failed")
+
+    failure = await asyncio.wait_for(
+        session.wait_lost(poll_interval=0.001), timeout=1
+    )
+
+    assert str(failure) == "notification failed"
+    await session.close()
 
 
 async def test_mesh_proxy_session_cleans_up_invalid_key(monkeypatch):
@@ -277,3 +413,41 @@ async def test_find_proxy_node_matches_fresh_network_id():
     assert match.device.address == "proxy"
     assert len(candidates) == 1
     assert scanner.running is False
+
+
+def test_node_identity_verification():
+    netkey = bytes(range(16))
+    parameter = bytes.fromhex(
+        "f8613f325ed3b78e0011223344556677"
+    )
+
+    assert sphere_transport.node_identity_matches(netkey, 0x1201, parameter)
+    assert not sphere_transport.node_identity_matches(netkey, 0x1202, parameter)
+    assert not sphere_transport.node_identity_matches(bytes(16), 0x1201, parameter)
+
+
+async def test_find_proxy_node_matches_verified_node_identity():
+    netkey = bytes(range(16))
+    parameter = bytes.fromhex(
+        "f8613f325ed3b78e0011223344556677"
+    )
+    fresh = {
+        "proxy": (
+            device("proxy"),
+            advertisement({PROXY_SERVICE: b"\x01" + parameter}),
+        )
+    }
+    scanner = CallbackScanner(fresh=fresh)
+
+    match, candidates = await sphere_transport.find_proxy_node(
+        scanner,
+        bytes(8),
+        timeout=0.01,
+        poll_interval=0.001,
+        identity_netkey=netkey,
+        node_addresses=(0x1201,),
+    )
+
+    assert match is not None
+    assert match.device.address == "proxy"
+    assert len(candidates) == 1
