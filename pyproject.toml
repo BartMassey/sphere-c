@@ -21,6 +21,8 @@ dev = [
 [project.scripts]
 sphere-mesh = "sphere_mesh.provision:main"
 sphere-capture = "sphere_mesh.capture:main"
+sphere-meshctl = "sphere_mesh.client:main"
+sphere-meshd = "sphere_mesh.daemon:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

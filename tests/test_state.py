@@ -5,6 +5,7 @@ import stat
 import pytest
 
 from sphere_mesh.state import (
+    MAX_NEXT_SEQUENCE,
     SCHEMA_VERSION,
     StateLockedError,
     StateError,
@@ -97,3 +98,14 @@ def test_state_store_allocates_tid_before_return(tmp_path):
     persisted = json.loads(store.path.read_text())
     assert allocated == 0xFF
     assert persisted["tid"] == 0
+
+
+def test_sequence_cursor_accepts_full_24_bit_exhausted_sentinel(tmp_path):
+    store = StateStore(tmp_path / "state.json")
+    with store:
+        state = store.load_or_create()
+        store.advance_sequence(state, MAX_NEXT_SEQUENCE)
+        with pytest.raises(StateError, match="exceeds"):
+            store.advance_sequence(state, MAX_NEXT_SEQUENCE + 1)
+
+    assert json.loads(store.path.read_text())["seq"] == 0x1000000

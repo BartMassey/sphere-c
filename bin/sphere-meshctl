@@ -1,0 +1,8 @@
+#!/bin/sh
+set -eu
+
+PROJECT_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+
+cd "$PROJECT_ROOT"
+PYTHONPATH="$PROJECT_ROOT/src${PYTHONPATH:+:$PYTHONPATH}" \
+    exec "$PROJECT_ROOT/.venv/bin/python" -m sphere_mesh.client "$@"

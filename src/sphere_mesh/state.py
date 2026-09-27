@@ -11,7 +11,7 @@ from pathlib import Path
 
 
 SCHEMA_VERSION = 1
-MAX_NEXT_SEQUENCE = 0x100000
+MAX_NEXT_SEQUENCE = 0x1000000
 
 
 class StateError(ValueError):
