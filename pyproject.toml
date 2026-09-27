@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sphere-mesh-lab"
+version = "0.1.0"
+description = "Olight Sphere C Bluetooth Mesh research and local control"
+requires-python = ">=3.12"
+dependencies = [
+    "btmesh[harness] @ git+https://github.com/dasimon135/ha-bluetooth-mesh.git@a8f7bbbebaeba124d7d08cb16122055074f2ef46",
+    "cryptography>=42",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+]
+
+[project.scripts]
+sphere-mesh = "sphere_mesh.provision:main"
+sphere-capture = "sphere_mesh.capture:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+pythonpath = ["src"]
+testpaths = ["tests"]

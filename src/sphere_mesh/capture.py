@@ -348,7 +348,12 @@ def write_csv(path, pdus):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("capture", type=Path, nargs="?", default=Path("sphere-c.btsnoop"))
+    parser.add_argument(
+        "capture",
+        type=Path,
+        nargs="?",
+        default=Path("old/captures/sphere-c.btsnoop"),
+    )
     parser.add_argument("--net-key")
     parser.add_argument("--app-key")
     parser.add_argument("--iv-index", type=lambda value: int(value, 0))

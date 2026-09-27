@@ -3,9 +3,9 @@ import stat
 
 import pytest
 
-import provision_sphere as sphere
+from sphere_mesh import provision as sphere
 from btmesh.bearer import PROXY_DATA_IN, PROXY_DATA_OUT, PROXY_SERVICE
-from sphere_transport import GattBearer
+from sphere_mesh.transport import GattBearer
 
 
 def test_state_is_created_with_private_permissions(tmp_path):

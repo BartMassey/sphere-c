@@ -63,11 +63,11 @@ from btmesh.node import MeshNode, ReceivedMessage
 from btmesh.provisioner import Provisioner
 from btmesh.proxy_pdu import MSG_TYPE_PROVISIONING_PDU
 from btmesh.pump import BearerPump
-from sphere_access import (
+from .access import (
     OP_CONFIG_NETWORK_TRANSMIT_STATUS,
     config_network_transmit_set,
 )
-from sphere_transport import (
+from .transport import (
     LocalTransport,
     disconnect_quietly,
     find_proxy_node,
@@ -78,7 +78,7 @@ from sphere_transport import (
 
 logger = logging.getLogger("sphere-provision")
 
-LOG_FILE = "mesh-lab/provision_run.log"
+LOG_FILE = "state/provision_run.log"
 SCAN_UNPROVISIONED_S = float(os.environ.get("SPHERE_SCAN_SECONDS", "60"))
 SCAN_PROXY_S = 5.0
 PROVISIONING_TIMEOUT_S = 60.0
@@ -136,7 +136,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="static OOB authentication value (1-16 bytes, hex)",
     )
     parser.add_argument(
-        "--state", default="mesh-lab/sphere_state.json",
+        "--state", default="state/sphere_state.json",
         help="state file: keys, addresses, SEQ (default: %(default)s)",
     )
     parser.add_argument(

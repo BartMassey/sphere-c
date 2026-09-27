@@ -4,7 +4,7 @@ import argparse
 import re
 from pathlib import Path
 
-from analyze_capture import k2, k3
+from sphere_mesh.capture import k2, k3
 
 
 HEX_128 = re.compile(
@@ -18,7 +18,7 @@ def main() -> None:
         "root",
         nargs="?",
         type=Path,
-        default=Path("phone_external/files"),
+        default=Path("old/phone_external/files"),
     )
     parser.add_argument(
         "--network-id",

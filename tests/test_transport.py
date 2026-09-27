@@ -3,9 +3,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-import sphere_transport
 from btmesh.access import generic_onoff_get
 from btmesh.bearer import PROV_SERVICE, PROXY_SERVICE, BearerError
+from sphere_mesh import transport as sphere_transport
 
 
 class FakeClient:

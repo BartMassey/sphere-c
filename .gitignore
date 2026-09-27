@@ -15,28 +15,10 @@ __pycache__/
 *.pem
 
 # Acquired application and package artifacts
-apk/
-*.apk
-*.deb
-*.xapk
+old/
 
-# Captures, decoded exports, and runtime logs
-*.btsnoop
-*.pcap
-*.pcapng
-*.log
-proxy_pdus.csv
-phone_external/
-
-# Local extracted dependencies and distribution payloads
-/tools/bluez-meshd-root/
-/vendor/
-
-# Bluetooth Mesh runtime state and secrets
-mesh-lab/captures/
-mesh-lab/client-state/
-mesh-lab/daemon-state/
-mesh-lab/sphere_state*.json
+# Bluetooth Mesh runtime state, captures, logs, and secrets
+state/
 
 # App-local agent metadata
 .agents/

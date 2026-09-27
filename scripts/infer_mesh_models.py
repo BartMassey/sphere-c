@@ -55,7 +55,10 @@ def isolated_transactions(rows, maximum_latency):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "csv_file", type=Path, nargs="?", default=Path("proxy_pdus.csv")
+        "csv_file",
+        type=Path,
+        nargs="?",
+        default=Path("old/analysis/proxy_pdus.csv"),
     )
     parser.add_argument("--maximum-latency", type=float, default=0.2)
     arguments = parser.parse_args()

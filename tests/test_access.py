@@ -1,7 +1,7 @@
 import pytest
 
 from btmesh.access import AccessError
-from sphere_access import config_network_transmit_set
+from sphere_mesh.access import config_network_transmit_set
 
 
 def test_network_transmit_set_matches_sphere_configuration():
