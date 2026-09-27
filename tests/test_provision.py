@@ -37,6 +37,9 @@ def test_save_state_is_atomic(tmp_path):
         ["--provision-only", "--toggle-only"],
         ["--provision-only", "--reset-node"],
         ["--toggle-only", "--reset-node"],
+        ["--toggle-only", "--control", "read"],
+        ["--reset-node", "--control", "read"],
+        ["--init-only", "--control", "read"],
     ],
 )
 def test_run_modes_are_mutually_exclusive(argv):
@@ -47,6 +50,14 @@ def test_run_modes_are_mutually_exclusive(argv):
 def test_local_transport_is_default():
     args = sphere.parse_args(["--init-only"])
     assert args.transport == "local"
+
+
+def test_control_commands_can_be_batched():
+    args = sphere.parse_args(
+        ["--control", "read", "--control", "on", "--control", "off"]
+    )
+
+    assert args.control == ["read", "on", "off"]
 
 
 def test_pick_device_prefers_active_address_for_duplicate_uuid():

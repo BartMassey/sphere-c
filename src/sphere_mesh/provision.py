@@ -64,6 +64,7 @@ from .access import (
     OP_CONFIG_NETWORK_TRANSMIT_STATUS,
     config_network_transmit_set,
 )
+from .control import BasicController, ControlUnavailable
 from .transport import (
     LocalTransport,
     disconnect_quietly,
@@ -84,7 +85,7 @@ logger = logging.getLogger("sphere-provision")
 
 LOG_FILE = "state/provision_run.log"
 SCAN_UNPROVISIONED_S = float(os.environ.get("SPHERE_SCAN_SECONDS", "60"))
-SCAN_PROXY_S = 5.0
+SCAN_PROXY_S = float(os.environ.get("SPHERE_PROXY_SCAN_SECONDS", "30"))
 PROVISIONING_TIMEOUT_S = 60.0
 
 LIMITATIONS_NOTE = (
@@ -163,6 +164,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="send a device-keyed Config Node Reset and perform no other action",
     )
     parser.add_argument(
+        "--control",
+        action="append",
+        choices=("read", "on", "off", "toggle"),
+        help="run an acknowledged basic control command on the saved node; "
+        "repeat to batch commands over one connection",
+    )
+    parser.add_argument(
         "--verbose", action="store_true",
         help="DEBUG logging (frame hex dumps) on the console as well",
     )
@@ -170,10 +178,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     if args.transport == "esphome" and not args.esphome_host:
         parser.error("--esphome-host is required with --transport esphome")
-    if args.init_only and (args.provision_only or args.toggle_only or args.reset_node):
+    run_modes = (
+        args.provision_only,
+        args.toggle_only,
+        args.reset_node,
+        args.control is not None,
+    )
+    if args.init_only and any(run_modes):
         parser.error("--init-only cannot be combined with a run mode")
-    if sum((args.provision_only, args.toggle_only, args.reset_node)) > 1:
+    if sum(run_modes) > 1:
         parser.error("provision, reuse, and reset modes are mutually exclusive")
+    if args.control and args.no_toggle:
+        parser.error("--control cannot be combined with --no-toggle")
     if args.device_uuid:
         args.device_uuid = args.device_uuid.replace("-", "").lower()
         try:
@@ -823,6 +839,27 @@ async def mesh_session(
                 print("No status reply; nodes commonly reset before replying.")
             print("Recovery keys remain in the state file for verification.")
             return
+        if args.control:
+            controller = BasicController(
+                node,
+                unicast,
+                lambda: store.allocate_tid(state),
+            )
+            for command in args.control:
+                try:
+                    result = await controller.execute(command)
+                except ControlUnavailable as exc:
+                    raise Phase0Failure(
+                        f"control {command}",
+                        str(exc),
+                        _timeout_causes(pump),
+                    ) from exc
+                target = "none" if result.target is None else int(result.target)
+                print(
+                    f"Control {command}: present={int(result.present)}, "
+                    f"target={target}, effective={int(result.effective)}"
+                )
+            return
         # --toggle-only still (re)configures when no successful bind was ever
         # recorded — AppKey re-Add with the same key is Success per §4.3.2.37.
         if not args.toggle_only or "control_model" not in state:
@@ -897,7 +934,7 @@ async def async_main(args: argparse.Namespace) -> int:
         return 1
 
     try:
-        if args.toggle_only or args.reset_node:
+        if args.toggle_only or args.reset_node or args.control:
             unicast = pick_device(state, args)
             print(f"using device 0x{unicast:04x} from {state_path}")
         else:
