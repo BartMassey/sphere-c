@@ -40,6 +40,10 @@ def test_save_state_is_atomic(tmp_path):
         ["--toggle-only", "--control", "read"],
         ["--reset-node", "--control", "read"],
         ["--init-only", "--control", "read"],
+        ["--control", "read", "--lighting", "lightness"],
+        ["--toggle-only", "--lighting", "lightness"],
+        ["--reset-node", "--lighting", "lightness"],
+        ["--init-only", "--lighting", "lightness"],
     ],
 )
 def test_run_modes_are_mutually_exclusive(argv):
@@ -58,6 +62,17 @@ def test_control_commands_can_be_batched():
     )
 
     assert args.control == ["read", "on", "off"]
+
+
+def test_lighting_commands_can_be_batched():
+    args = sphere.parse_args(
+        ["--lighting", "lightness", "--lighting", "hsl=1,2,3"]
+    )
+
+    assert args.lighting[0].model == "lightness"
+    assert args.lighting[0].values is None
+    assert args.lighting[1].model == "hsl"
+    assert args.lighting[1].values == (1, 2, 3)
 
 
 def test_pick_device_prefers_active_address_for_duplicate_uuid():

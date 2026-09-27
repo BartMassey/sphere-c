@@ -65,6 +65,17 @@ from .access import (
     config_network_transmit_set,
 )
 from .control import BasicController, ControlUnavailable
+from .lighting import (
+    HslState,
+    LightingController,
+    LightingUnavailable,
+    LightingUnsupported,
+    LightnessState,
+    TemperatureState,
+    XylState,
+    model_element,
+    parse_lighting_command,
+)
 from .transport import (
     LocalTransport,
     disconnect_quietly,
@@ -171,10 +182,26 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "repeat to batch commands over one connection",
     )
     parser.add_argument(
+        "--lighting",
+        action="append",
+        metavar="COMMAND",
+        help="read or set a standard lighting model; use lightness[=L], "
+        "temperature[=K], hsl[=L,H,S], or xyl[=L,X,Y], and repeat to "
+        "batch commands over one connection",
+    )
+    parser.add_argument(
         "--verbose", action="store_true",
         help="DEBUG logging (frame hex dumps) on the console as well",
     )
     args = parser.parse_args(argv)
+
+    if args.lighting:
+        try:
+            args.lighting = [
+                parse_lighting_command(command) for command in args.lighting
+            ]
+        except ValueError as exc:
+            parser.error(str(exc))
 
     if args.transport == "esphome" and not args.esphome_host:
         parser.error("--esphome-host is required with --transport esphome")
@@ -183,6 +210,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         args.toggle_only,
         args.reset_node,
         args.control is not None,
+        args.lighting is not None,
     )
     if args.init_only and any(run_modes):
         parser.error("--init-only cannot be combined with a run mode")
@@ -190,6 +218,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error("provision, reuse, and reset modes are mutually exclusive")
     if args.control and args.no_toggle:
         parser.error("--control cannot be combined with --no-toggle")
+    if args.lighting and args.no_toggle:
+        parser.error("--lighting cannot be combined with --no-toggle")
     if args.device_uuid:
         args.device_uuid = args.device_uuid.replace("-", "").lower()
         try:
@@ -793,6 +823,21 @@ async def mesh_session(
     args, state: dict, store: StateStore, transport, unicast: int
 ) -> None:
     """Connect the proxy, configure (unless --toggle-only), toggle. Milestone B."""
+    if args.lighting:
+        for command in args.lighting:
+            try:
+                model_element(
+                    state.get("composition", {}), command.server_model
+                )
+            except LightingUnsupported as exc:
+                raise Phase0Failure(
+                    f"lighting {command.model}",
+                    str(exc),
+                    [
+                        "the saved authenticated Composition Data does not "
+                        "advertise this standard server model"
+                    ],
+                ) from exc
     entry = state["devices"][f"0x{unicast:04x}"]
     netkey = bytes.fromhex(state["netkey"])
     appkey = bytes.fromhex(state["appkey"])
@@ -859,6 +904,57 @@ async def mesh_session(
                     f"Control {command}: present={int(result.present)}, "
                     f"target={target}, effective={int(result.effective)}"
                 )
+            return
+        if args.lighting:
+            controller = LightingController(
+                node,
+                state.get("composition", {}),
+                lambda: store.allocate_tid(state),
+            )
+            for command in args.lighting:
+                try:
+                    result = await controller.execute(command)
+                except LightingUnsupported as exc:
+                    raise Phase0Failure(
+                        f"lighting {command.model}",
+                        str(exc),
+                        [
+                            "the saved authenticated Composition Data does "
+                            "not advertise this standard server model"
+                        ],
+                    ) from exc
+                except LightingUnavailable as exc:
+                    raise Phase0Failure(
+                        f"lighting {command.model}",
+                        str(exc),
+                        _timeout_causes(pump),
+                    ) from exc
+                action = "read" if command.values is None else "set"
+                if isinstance(result, LightnessState):
+                    print(
+                        f"Lighting lightness {action}: present={result.present}, "
+                        f"target={result.target}, "
+                        f"remaining_time={result.remaining_time}"
+                    )
+                elif isinstance(result, TemperatureState):
+                    print(
+                        f"Lighting temperature {action}: "
+                        f"present={result.present} K, delta_uv={result.delta_uv}, "
+                        f"target={result.target}, "
+                        f"remaining_time={result.remaining_time}"
+                    )
+                elif isinstance(result, HslState):
+                    print(
+                        f"Lighting hsl {action}: lightness={result.lightness}, "
+                        f"hue={result.hue}, saturation={result.saturation}, "
+                        f"remaining_time={result.remaining_time}"
+                    )
+                elif isinstance(result, XylState):
+                    print(
+                        f"Lighting xyl {action}: lightness={result.lightness}, "
+                        f"x={result.x}, y={result.y}, "
+                        f"remaining_time={result.remaining_time}"
+                    )
             return
         # --toggle-only still (re)configures when no successful bind was ever
         # recorded — AppKey re-Add with the same key is Success per §4.3.2.37.
@@ -934,7 +1030,7 @@ async def async_main(args: argparse.Namespace) -> int:
         return 1
 
     try:
-        if args.toggle_only or args.reset_node or args.control:
+        if args.toggle_only or args.reset_node or args.control or args.lighting:
             unicast = pick_device(state, args)
             print(f"using device 0x{unicast:04x} from {state_path}")
         else:
