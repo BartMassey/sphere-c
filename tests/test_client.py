@@ -10,9 +10,9 @@ def test_vendor_read_accepts_decimal_and_prefixed_ids():
 
 def test_effect_cli_parses_named_operations():
     for operation in ("set", "select", "activate"):
-        args = parse_args(["effect", operation, "colour_2"])
+        args = parse_args(["effect", operation, "aurora"])
         assert (args.command, args.operation, args.name) == (
-            "effect", operation, "colour_2"
+            "effect", operation, "aurora"
         )
     args = parse_args(["effect", "get"])
     assert (args.command, args.operation) == ("effect", "get")

@@ -76,6 +76,15 @@ VISIBLE_EFFECT_VALUES = frozenset((
     0, 1, 2, 3, 4, 6, 7, 8, 9, 10, 11, 12, 13,
     15, 16, 17, 18, 20, 21, 24, 25, 26, 28, 29, 30, 31,
 ))
+EFFECT_SLUGS = (
+    "flame", "cotton-candy", "aurora", "fireworks", "fountain",
+    None, "spiral", "color-wheel", "red-flash", "confetti",
+    "butterfly", "fireball", "gradient", "carousel", None,
+    "magic-ball", "lilac", "sunset", "vibrant", None,
+    "red-light", "blue-sky", None, None, "harvest",
+    "willow-wisp", "zombie", None, "phantom-purple",
+    "christmas", "candy-cane", "snowfall",
+)
 
 
 def effect_name(value: int) -> str:
@@ -87,8 +96,8 @@ def effect_name(value: int) -> str:
 def effect_value(name: str, *, visible_only: bool = False) -> int:
     if not isinstance(name, str):
         raise ValueError("effect name must be a string")
-    if name == "flame":
-        value = 0
+    if name in EFFECT_SLUGS:
+        value = EFFECT_SLUGS.index(name)
     elif name.startswith("colour_") and name[7:].isdigit():
         suffix = name[7:]
         if suffix != str(int(suffix)):
@@ -96,17 +105,19 @@ def effect_value(name: str, *, visible_only: bool = False) -> int:
         value = int(suffix)
     else:
         raise ValueError(f"unknown effect: {name}")
-    if (name != "flame" and value == 0) or value > 31:
+    if (name.startswith("colour_") and value == 0) or value > 31:
         raise ValueError(f"unknown effect: {name}")
     if visible_only and value not in VISIBLE_EFFECT_VALUES:
         raise ValueError(f"effect is not in the visible picker: {name}")
     return value
 
 
-def effect_catalog() -> list[dict[str, str | int | bool]]:
+def effect_catalog() -> list[dict[str, str | int | bool | None]]:
     return [
         {
             "name": effect_name(value),
+            "canonical": effect_name(value),
+            "slug": EFFECT_SLUGS[value],
             "value": value,
             "label": label,
             "visible": value in VISIBLE_EFFECT_VALUES,
@@ -131,6 +142,8 @@ def guarded_dp_write(values: dict[int, int]) -> bytes:
         maximum = 3 if dp_id == 2 else 31
         if not 0 <= value <= maximum:
             raise AccessError(f"DP {dp_id} enum value must be 0..{maximum}")
+        if dp_id == 102 and value not in VISIBLE_EFFECT_VALUES:
+            raise AccessError("DP 102 effect is not in the visible picker")
         records.append(tuya_dp_record(dp_id, TuyaDpType.ENUM, value))
     return tuya_dp_write(records)
 

@@ -136,7 +136,8 @@ async def test_effect_list_is_available_without_bluetooth():
     service, _ = runtime(connected=False)
     result = await service.handle("effect.list", {})
     assert result["effects"][2] == {
-        "name": "colour_2", "value": 2, "label": "Aurora", "visible": True,
+        "name": "colour_2", "canonical": "colour_2", "slug": "aurora",
+        "value": 2, "label": "Aurora", "visible": True,
     }
 
 
@@ -153,7 +154,8 @@ async def test_effect_get_returns_current_vendor_snapshot():
     service, _ = runtime(node)
     result = await service.handle("effect.get", {})
     assert result["effect"] == {
-        "name": "colour_7", "value": 7, "label": "Color Wheel", "visible": True,
+        "name": "colour_7", "canonical": "colour_7", "slug": "color-wheel",
+        "value": 7, "label": "Color Wheel", "visible": True,
     }
     assert result["snapshot"]["missing_dp_ids"] == [2]
 
@@ -177,6 +179,27 @@ async def test_effect_set_requires_visible_name_and_reports_ack():
         0x0118, bytes.fromhex("c9d00701660402"),
         OP_TUYA_DP_DATA, timeout=5.0, retries=0,
     )
+
+
+@pytest.mark.parametrize("method", ["effect.set", "effect.select", "effect.activate"])
+async def test_effect_write_accepts_slug_and_reports_canonical_name(method):
+    node = Mock()
+    node.received = deque()
+    ack = message(OP_TUYA_DP_DATA, b"\x01")
+
+    async def request(*args, **kwargs):
+        node.received.append(ack)
+        return ack
+
+    node.request = AsyncMock(side_effect=request)
+    service, _ = runtime(node)
+    result = await service.handle(method, {"name": "aurora"})
+    assert result["requested_effect"] == "colour_2"
+    assert result["acknowledged"] is True
+    assert node.request.await_args_list[-1].args[1] == bytes.fromhex(
+        "c9d00701660402"
+    )
+    assert node.request.await_count == (2 if method == "effect.activate" else 1)
 
 
 async def test_effect_set_rejects_a_contradictory_echo():

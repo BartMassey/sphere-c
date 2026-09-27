@@ -36,7 +36,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     effect = commands.add_parser("effect", help="list, read, or set a built-in effect")
     effect_commands = effect.add_subparsers(dest="operation", required=True)
-    effect_commands.add_parser("list", help="list effect names and labels")
+    effect_commands.add_parser(
+        "list", help="list effect slugs, schema names, and labels"
+    )
     effect_commands.add_parser("get", help="read the current vendor snapshot")
     for operation, help_text in (
         ("set", "select a visible effect with DP 102"),
@@ -45,7 +47,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ):
         effect_command = effect_commands.add_parser(operation, help=help_text)
         effect_command.add_argument(
-            "name", help="effect name, such as flame or colour_2"
+            "name",
+            help="visible effect slug or schema name, such as aurora or colour_2",
         )
     countdown = commands.add_parser(
         "countdown", help="read, set, or cancel the panel countdown"

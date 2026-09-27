@@ -71,21 +71,50 @@ def test_countdown_write_rejects_invalid_seconds(seconds):
 def test_effect_catalog_preserves_schema_and_visible_picker():
     catalog = effect_catalog()
     assert len(catalog) == 32
-    assert catalog[0] == {"name": "flame", "value": 0, "label": "Flame", "visible": True}
+    assert catalog[0] == {
+        "name": "flame", "canonical": "flame", "slug": "flame",
+        "value": 0, "label": "Flame", "visible": True,
+    }
     assert catalog[7]["label"] == "Color Wheel"
     assert catalog[31]["name"] == "colour_31"
     assert {item["value"] for item in catalog if not item["visible"]} == {
         5, 14, 19, 22, 23, 27,
     }
+    visible = [item for item in catalog if item["visible"]]
+    assert len(visible) == 26
+    assert len({item["slug"] for item in visible}) == 26
+    assert all(item["slug"] is None for item in catalog if not item["visible"])
+    for item in visible:
+        assert effect_value(item["slug"], visible_only=True) == item["value"]
+        assert effect_value(item["canonical"], visible_only=True) == item["value"]
+    assert catalog[23]["label"] == catalog[29]["label"] == "Christmas"
+    assert catalog[27]["label"] == catalog[31]["label"] == "Snowfall"
+    assert effect_value("christmas", visible_only=True) == 29
+    assert effect_value("snowfall", visible_only=True) == 31
 
 
-@pytest.mark.parametrize("name", ["colour_5", "colour_22", "colour_0", "colour_32", "colour_02", "red", 2])
+@pytest.mark.parametrize("name,value", [
+    ("aurora", 2), ("color-wheel", 7), ("cotton-candy", 1),
+    ("candy-cane", 30), ("flame", 0),
+])
+def test_effect_selection_accepts_visible_slug(name, value):
+    assert effect_selection(name) == {2: 1, 102: value}
+
+
+@pytest.mark.parametrize("name", [
+    "colour_5", "colour_22", "colour_0", "colour_32", "colour_02",
+    "red", "firefly", "floating", "autumn", "new-year", 2,
+])
 def test_effect_selection_rejects_non_visible_or_invalid_name(name):
     with pytest.raises(ValueError):
         effect_selection(name)
 
 
-@pytest.mark.parametrize("values", [{}, {1: 1}, {2: 4}, {102: 32}, {2: True}, {102: "2"}, {2: 1, 8: 0}])
+@pytest.mark.parametrize("values", [
+    {}, {1: 1}, {2: 4}, {102: 32}, {2: True},
+    {102: "2"}, {2: 1, 8: 0},
+    *({102: value} for value in (5, 14, 19, 22, 23, 27)),
+])
 def test_guarded_write_rejects_unknown_or_invalid_datapoints(values):
     with pytest.raises(AccessError):
         guarded_dp_write(values)
