@@ -21,6 +21,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("health", help="show service and Bluetooth health")
+    commands.add_parser("status", help="show health and saved capabilities")
     basic = commands.add_parser("control", help="run a basic power command")
     basic.add_argument("operation", choices=("read", "on", "off", "toggle"))
     lighting = commands.add_parser("lighting", help="read or set lighting state")
@@ -64,8 +65,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 async def async_main(args: argparse.Namespace) -> int:
-    if args.command == "health":
-        method, params = "health", {}
+    if args.command in ("health", "status"):
+        method, params = args.command, {}
     elif args.command == "control":
         method, params = "control", {"command": args.operation}
     elif args.command == "vendor-read":

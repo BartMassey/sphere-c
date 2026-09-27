@@ -51,6 +51,28 @@ async def test_api_returns_public_request_errors(tmp_path):
     }
 
 
+async def test_api_preserves_partial_failure_details(tmp_path):
+    from sphere_mesh.api import ApiRequestError
+
+    async def handler(method, params):
+        raise ApiRequestError(
+            "unavailable", "effect write timed out",
+            details={"completed_steps": ["mode_transport_acknowledged"]},
+        )
+
+    path = tmp_path / "sphere.sock"
+    server = UnixApiServer(path, handler)
+    await server.start()
+    try:
+        response = await request(path, "effect.activate")
+    finally:
+        await server.close()
+
+    assert response["error"]["details"] == {
+        "completed_steps": ["mode_transport_acknowledged"]
+    }
+
+
 async def test_api_rejects_unsupported_version(tmp_path):
     async def handler(method, params):
         raise AssertionError("handler must not run")

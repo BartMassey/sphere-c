@@ -18,9 +18,12 @@ logger = logging.getLogger("sphere-api")
 
 
 class ApiRequestError(RuntimeError):
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(
+        self, code: str, message: str, *, details: dict[str, Any] | None = None
+    ) -> None:
         super().__init__(message)
         self.code = code
+        self.details = details
 
 
 class ApiProtocolError(RuntimeError):
@@ -34,7 +37,7 @@ def _response(
     request_id: object,
     *,
     result: dict[str, Any] | None = None,
-    error: dict[str, str] | None = None,
+    error: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     response: dict[str, Any] = {
         "version": API_VERSION,
@@ -144,9 +147,12 @@ class UnixApiServer:
             result = await self._handler(method, params)
             response = _response(request_id, result=result)
         except ApiRequestError as exc:
+            error = {"code": exc.code, "message": str(exc)}
+            if exc.details is not None:
+                error["details"] = exc.details
             response = _response(
                 request_id,
-                error={"code": exc.code, "message": str(exc)},
+                error=error,
             )
         except Exception:
             logger.exception("API handler failed")

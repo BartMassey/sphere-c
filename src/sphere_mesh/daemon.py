@@ -48,6 +48,34 @@ logger = logging.getLogger("sphere-daemon")
 DEFAULT_STATE = Path("state/sphere_state.json")
 DEFAULT_SOCKET = Path("state/sphere.sock")
 PROXY_SCAN_SECONDS = 30.0
+DP_NAMES = {
+    1: "switch_led",
+    2: "work_mode",
+    3: "bright_value",
+    5: "colour_data",
+    6: "scene_data",
+    7: "countdown",
+    8: "music_data",
+    33: "power_memory",
+    37: "rtc_timer",
+    38: "timer_report",
+    101: "countdown_2",
+    102: "colour_mode",
+    103: "battery_percentage",
+    104: "sleep_switch",
+    105: "game_flag",
+    106: "factory_mode_reset",
+    107: "water_mode",
+}
+
+
+def _verification(*, reported: bool, readback: bool) -> dict:
+    return {
+        "transport_acknowledged": True,
+        "response_reported_value": reported,
+        "independent_readback": readback,
+        "visually_verified": False,
+    }
 
 
 class SupervisedSession(Protocol):
@@ -182,12 +210,12 @@ class SphereRuntime:
         self._command_lock = asyncio.Lock()
 
     async def handle(self, method: str, params: dict) -> dict:
-        if method == "health":
+        if method in ("health", "status"):
             if params:
                 raise ApiRequestError(
-                    "invalid_params", "health does not accept parameters"
+                    "invalid_params", f"{method} does not accept parameters"
                 )
-            return self.health()
+            return self.health() if method == "health" else self.status()
         if method == "effect.list":
             if params:
                 raise ApiRequestError(
@@ -228,6 +256,35 @@ class SphereRuntime:
             "last_failure": None if failure is None else str(failure),
         }
 
+    def status(self) -> dict:
+        composition = self._state.get("composition", {})
+        sig_models = {
+            model
+            for element in composition.get("elements", [])
+            for model in element.get("sig_models", [])
+        }
+        vendor_models = {
+            (model.get("company_id"), model.get("model_id"))
+            for element in composition.get("elements", [])
+            for model in element.get("vendor_models", [])
+        }
+        vendor = (0x07D0, 0x0004) in vendor_models
+        return {
+            **self.health(),
+            "capabilities": {
+                "control": 0x1000 in sig_models,
+                "lighting": {
+                    "lightness": 0x1300 in sig_models,
+                    "temperature": 0x1306 in sig_models,
+                    "hsl": 0x1307 in sig_models,
+                    "xyl": 0x130C in sig_models,
+                },
+                "vendor_read": vendor,
+                "effects": vendor,
+                "countdown": vendor,
+            },
+        }
+
     async def _control(self, session, params: dict) -> dict:
         command = params.get("command")
         if set(params) != {"command"} or command not in (
@@ -256,6 +313,9 @@ class SphereRuntime:
                 "remaining_time": result.remaining_time,
                 "effective": result.effective,
             },
+            "verification": _verification(
+                reported=True, readback=command == "read"
+            ),
         }
 
     async def _lighting(self, session, params: dict) -> dict:
@@ -283,6 +343,9 @@ class SphereRuntime:
             "command": raw_command,
             "model": command.model,
             "state": asdict(result),
+            "verification": _verification(
+                reported=True, readback=command.values is None
+            ),
         }
 
     async def _vendor_read(self, session, params: dict) -> dict:
@@ -316,7 +379,12 @@ class SphereRuntime:
             raise ApiRequestError("unavailable", str(exc)) from exc
         except AccessError as exc:
             raise ApiRequestError("protocol_error", str(exc)) from exc
-        return self._vendor_snapshot(data, dp_ids)
+        return {
+            **self._vendor_snapshot(data, dp_ids),
+            "verification": _verification(
+                reported=bool(data.records), readback=True
+            ),
+        }
 
     @staticmethod
     def _vendor_snapshot(data, dp_ids: list[int]) -> dict:
@@ -330,6 +398,7 @@ class SphereRuntime:
             "datapoints": [
                 {
                     "id": record.dp_id,
+                    "name": DP_NAMES.get(record.dp_id),
                     "type": record.dp_type.name.lower(),
                     "value": json_value(record),
                     "raw": record.raw.hex(),
@@ -400,12 +469,19 @@ class SphereRuntime:
                 raise ApiRequestError(
                     "protocol_error", "DP 101 missing from countdown response"
                 )
-            return {"seconds": reported, "snapshot": snapshot}
+            return {
+                "seconds": reported,
+                "snapshot": snapshot,
+                "verification": _verification(reported=True, readback=True),
+            }
         return {
             "requested_seconds": seconds,
             "acknowledged": True,
             "reported_seconds": reported,
             "response": snapshot,
+            "verification": _verification(
+                reported=reported is not None, readback=False
+            ),
         }
 
     async def _effect(self, session, method: str, params: dict) -> dict:
@@ -431,7 +507,37 @@ class SphereRuntime:
                 data = await controller.read([2, 102])
             elif method == "effect.activate":
                 mode_data = await controller.write({2: values[2]})
-                data = await controller.write({102: values[102]})
+                for record in mode_data.records:
+                    if record.dp_id == 2 and (
+                        record.dp_type is not TuyaDpType.ENUM
+                        or record.value != values[2]
+                    ):
+                        raise ApiRequestError(
+                            "protocol_error",
+                            "Sphere reported a different DP 2 mode than requested",
+                            details={
+                                "completed_steps": [],
+                                "failed_step": "mode",
+                                "effect_write_attempted": False,
+                            },
+                        )
+                try:
+                    data = await controller.write({102: values[102]})
+                except (VendorUnavailable, VendorUnsupported, AccessError) as exc:
+                    code = (
+                        "unavailable" if isinstance(exc, VendorUnavailable)
+                        else "unsupported" if isinstance(exc, VendorUnsupported)
+                        else "protocol_error"
+                    )
+                    raise ApiRequestError(
+                        code, str(exc),
+                        details={
+                            "completed_steps": ["mode_transport_acknowledged"],
+                            "failed_step": "effect",
+                            "effect_write_attempted": True,
+                            "result_uncertain": True,
+                        },
+                    ) from exc
             else:
                 data = await controller.write({102: values[102]})
         except VendorUnsupported as exc:
@@ -452,29 +558,42 @@ class SphereRuntime:
                 effect = effect_catalog()[value]
                 break
         if method == "effect.get":
-            return {"effect": effect, "snapshot": snapshot}
+            return {
+                "effect": effect,
+                "snapshot": snapshot,
+                "verification": _verification(
+                    reported=effect is not None, readback=True
+                ),
+            }
         if effect is not None and effect["value"] != values[102]:
             raise ApiRequestError(
                 "protocol_error",
                 "Sphere reported a different DP 102 effect than requested",
+                details=(
+                    {
+                        "completed_steps": ["mode_transport_acknowledged"],
+                        "failed_step": "effect",
+                        "effect_write_attempted": True,
+                        "result_uncertain": True,
+                    }
+                    if method == "effect.activate" else None
+                ),
             )
-        if method == "effect.activate":
-            for record in reversed(mode_data.records):
-                if record.dp_id == 2:
-                    if record.dp_type.name != "ENUM" or record.value != values[2]:
-                        raise ApiRequestError(
-                            "protocol_error",
-                            "Sphere reported a different DP 2 mode than requested",
-                        )
-                    break
         result = {
             "requested_effect": effect_name(values[102]),
             "acknowledged": True,
             "reported_effect": effect,
             "response": self._vendor_snapshot(data, [102]),
+            "verification": _verification(
+                reported=effect is not None, readback=False
+            ),
         }
         if method == "effect.activate":
             result["mode_response"] = self._vendor_snapshot(mode_data, [2])
+            result["mode_verification"] = _verification(
+                reported=any(record.dp_id == 2 for record in mode_data.records),
+                readback=False,
+            )
         return result
 
 
