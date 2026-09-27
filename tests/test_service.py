@@ -1,3 +1,4 @@
+from collections import deque
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -7,6 +8,7 @@ from btmesh.access import OP_GENERIC_ONOFF_STATUS, OP_LIGHT_LIGHTNESS_STATUS
 from btmesh.node import ReceivedMessage
 from sphere_mesh.api import ApiRequestError
 from sphere_mesh.daemon import SphereRuntime
+from sphere_mesh.vendor import OP_TUYA_DP_DATA
 
 
 class Store:
@@ -33,7 +35,13 @@ def runtime(node=None, *, connected=True):
         "appkey": "secret",
         "composition": {
             "elements": [
-                {"address": 0x0118, "sig_models": [0x1300, 0x1307]}
+                {
+                    "address": 0x0118,
+                    "sig_models": [0x1300, 0x1307],
+                    "vendor_models": [
+                        {"company_id": 0x07D0, "model_id": 0x0004}
+                    ],
+                }
             ]
         },
     }
@@ -96,6 +104,34 @@ async def test_lighting_returns_typed_state():
     }
 
 
+async def test_vendor_read_returns_typed_and_raw_datapoints():
+    node = Mock()
+    node.received = deque()
+    response = message(
+        OP_TUYA_DP_DATA,
+        bytes.fromhex("01 02 04 02 66 04 1f"),
+    )
+
+    async def request(*args, **kwargs):
+        node.received.append(response)
+        return response
+
+    node.request = AsyncMock(side_effect=request)
+    service, _ = runtime(node)
+
+    result = await service.handle("vendor.read", {"dp_ids": [2, 102]})
+
+    assert result == {
+        "command_type": 1,
+        "requested_dp_ids": [2, 102],
+        "missing_dp_ids": [],
+        "datapoints": [
+            {"id": 2, "type": "enum", "value": 2, "raw": "02"},
+            {"id": 102, "type": "enum", "value": 31, "raw": "1f"},
+        ],
+    }
+
+
 @pytest.mark.parametrize(
     ("method", "params", "code"),
     [
@@ -103,6 +139,9 @@ async def test_lighting_returns_typed_state():
         ("health", {"extra": True}, "invalid_params"),
         ("control", {"command": "pulse"}, "invalid_params"),
         ("lighting", {"command": "rgb"}, "invalid_params"),
+        ("vendor.read", {"dp_ids": []}, "invalid_params"),
+        ("vendor.read", {"dp_ids": [2, 2]}, "invalid_params"),
+        ("vendor.read", {"dp_ids": [256]}, "invalid_params"),
     ],
 )
 async def test_runtime_rejects_invalid_requests(method, params, code):

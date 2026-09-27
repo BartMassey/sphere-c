@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
 
+from btmesh.access import AccessError
 from btmesh.bearer import BearerError
 from btmesh.crypto import k3
 
@@ -30,6 +31,12 @@ from .transport import (
     LocalTransport,
     find_proxy_node,
     open_mesh_proxy_session,
+)
+from .vendor import (
+    TuyaVendorController,
+    VendorUnavailable,
+    VendorUnsupported,
+    json_value,
 )
 
 
@@ -177,7 +184,7 @@ class SphereRuntime:
                     "invalid_params", "health does not accept parameters"
                 )
             return self.health()
-        if method not in ("control", "lighting"):
+        if method not in ("control", "lighting", "vendor.read"):
             raise ApiRequestError("unknown_method", f"unknown method: {method}")
         async with self._command_lock:
             session = self._supervisor.session
@@ -187,7 +194,9 @@ class SphereRuntime:
                 )
             if method == "control":
                 return await self._control(session, params)
-            return await self._lighting(session, params)
+            if method == "lighting":
+                return await self._lighting(session, params)
+            return await self._vendor_read(session, params)
 
     def health(self) -> dict:
         failure = self._supervisor.last_failure
@@ -256,6 +265,55 @@ class SphereRuntime:
             "command": raw_command,
             "model": command.model,
             "state": asdict(result),
+        }
+
+    async def _vendor_read(self, session, params: dict) -> dict:
+        dp_ids = params.get("dp_ids")
+        if (
+            set(params) != {"dp_ids"}
+            or not isinstance(dp_ids, list)
+            or not dp_ids
+            or len(dp_ids) > 0xFF
+            or any(
+                not isinstance(dp_id, int)
+                or isinstance(dp_id, bool)
+                or not 0 <= dp_id <= 0xFF
+                for dp_id in dp_ids
+            )
+            or len(set(dp_ids)) != len(dp_ids)
+        ):
+            raise ApiRequestError(
+                "invalid_params",
+                "vendor.read requires 1..255 unique uint8 dp_ids",
+            )
+        controller = TuyaVendorController(
+            session.node,
+            self._state.get("composition", {}),
+        )
+        try:
+            data = await controller.read(dp_ids)
+        except VendorUnsupported as exc:
+            raise ApiRequestError("unsupported", str(exc)) from exc
+        except VendorUnavailable as exc:
+            raise ApiRequestError("unavailable", str(exc)) from exc
+        except AccessError as exc:
+            raise ApiRequestError("protocol_error", str(exc)) from exc
+        returned_ids = {record.dp_id for record in data.records}
+        return {
+            "command_type": data.command_type,
+            "requested_dp_ids": dp_ids,
+            "missing_dp_ids": [
+                dp_id for dp_id in dp_ids if dp_id not in returned_ids
+            ],
+            "datapoints": [
+                {
+                    "id": record.dp_id,
+                    "type": record.dp_type.name.lower(),
+                    "value": json_value(record),
+                    "raw": record.raw.hex(),
+                }
+                for record in data.records
+            ],
         }
 
 

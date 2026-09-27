@@ -25,6 +25,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     basic.add_argument("operation", choices=("read", "on", "off", "toggle"))
     lighting = commands.add_parser("lighting", help="read or set lighting state")
     lighting.add_argument("operation")
+    vendor = commands.add_parser(
+        "vendor-read", help="read Tuya/Olight vendor datapoints"
+    )
+    vendor.add_argument(
+        "dp_ids",
+        nargs="+",
+        type=lambda value: int(value, 0),
+        metavar="DP_ID",
+    )
     return parser.parse_args(argv)
 
 
@@ -33,6 +42,8 @@ async def async_main(args: argparse.Namespace) -> int:
         method, params = "health", {}
     elif args.command == "control":
         method, params = "control", {"command": args.operation}
+    elif args.command == "vendor-read":
+        method, params = "vendor.read", {"dp_ids": args.dp_ids}
     else:
         method, params = "lighting", {"command": args.operation}
     try:
