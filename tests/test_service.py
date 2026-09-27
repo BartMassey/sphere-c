@@ -132,6 +132,85 @@ async def test_vendor_read_returns_typed_and_raw_datapoints():
     }
 
 
+async def test_effect_list_is_available_without_bluetooth():
+    service, _ = runtime(connected=False)
+    result = await service.handle("effect.list", {})
+    assert result["effects"][2] == {
+        "name": "colour_2", "value": 2, "label": "Aurora", "visible": True,
+    }
+
+
+async def test_effect_get_returns_current_vendor_snapshot():
+    node = Mock()
+    node.received = deque()
+    response = message(OP_TUYA_DP_DATA, bytes.fromhex("01660407"))
+
+    async def request(*args, **kwargs):
+        node.received.append(response)
+        return response
+
+    node.request = AsyncMock(side_effect=request)
+    service, _ = runtime(node)
+    result = await service.handle("effect.get", {})
+    assert result["effect"] == {
+        "name": "colour_7", "value": 7, "label": "Color Wheel", "visible": True,
+    }
+    assert result["snapshot"]["missing_dp_ids"] == [2]
+
+
+async def test_effect_set_requires_visible_name_and_reports_ack():
+    node = Mock()
+    node.received = deque()
+    ack = message(OP_TUYA_DP_DATA, b"\x01")
+
+    async def request(*args, **kwargs):
+        node.received.append(ack)
+        return ack
+
+    node.request = AsyncMock(side_effect=request)
+    service, _ = runtime(node)
+    result = await service.handle("effect.set", {"name": "colour_2"})
+    assert result["requested_effect"] == "colour_2"
+    assert result["acknowledged"] is True
+    assert result["reported_effect"] is None
+    node.request.assert_awaited_once_with(
+        0x0118, bytes.fromhex("c9d00701660402"),
+        OP_TUYA_DP_DATA, timeout=5.0, retries=0,
+    )
+
+
+async def test_effect_activate_writes_mode_before_effect():
+    node = Mock()
+    node.received = deque()
+    ack = message(OP_TUYA_DP_DATA, b"\x01")
+
+    async def request(*args, **kwargs):
+        node.received.append(ack)
+        return ack
+
+    node.request = AsyncMock(side_effect=request)
+    service, _ = runtime(node)
+    result = await service.handle("effect.activate", {"name": "colour_2"})
+    assert result["acknowledged"] is True
+    assert node.request.await_count == 2
+    assert [call.args[1] for call in node.request.await_args_list] == [
+        bytes.fromhex("c9d00701020401"),
+        bytes.fromhex("c9d00701660402"),
+    ]
+    assert all(call.kwargs["retries"] == 0 for call in node.request.await_args_list)
+
+
+async def test_effect_activate_stops_when_mode_write_times_out():
+    node = Mock()
+    node.received = deque()
+    node.request = AsyncMock(side_effect=TimeoutError)
+    service, _ = runtime(node)
+    with pytest.raises(ApiRequestError) as failure:
+        await service.handle("effect.activate", {"name": "colour_2"})
+    assert failure.value.code == "unavailable"
+    assert node.request.await_count == 1
+
+
 @pytest.mark.parametrize(
     ("method", "params", "code"),
     [
@@ -142,6 +221,11 @@ async def test_vendor_read_returns_typed_and_raw_datapoints():
         ("vendor.read", {"dp_ids": []}, "invalid_params"),
         ("vendor.read", {"dp_ids": [2, 2]}, "invalid_params"),
         ("vendor.read", {"dp_ids": [256]}, "invalid_params"),
+        ("effect.get", {"name": "flame"}, "invalid_params"),
+        ("effect.list", {"name": "flame"}, "invalid_params"),
+        ("effect.set", {"name": "colour_5"}, "invalid_params"),
+        ("effect.set", {"name": "colour_32"}, "invalid_params"),
+        ("effect.set", {"name": 2}, "invalid_params"),
     ],
 )
 async def test_runtime_rejects_invalid_requests(method, params, code):

@@ -34,6 +34,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=lambda value: int(value, 0),
         metavar="DP_ID",
     )
+    effect = commands.add_parser("effect", help="list, read, or set a built-in effect")
+    effect_commands = effect.add_subparsers(dest="operation", required=True)
+    effect_commands.add_parser("list", help="list effect names and labels")
+    effect_commands.add_parser("get", help="read the current vendor snapshot")
+    for operation, help_text in (
+        ("set", "select a visible effect with DP 102"),
+        ("select", "select a visible effect with DP 102"),
+        ("activate", "enter colour mode, then select a visible effect"),
+    ):
+        effect_command = effect_commands.add_parser(operation, help=help_text)
+        effect_command.add_argument(
+            "name", help="effect name, such as flame or colour_2"
+        )
     return parser.parse_args(argv)
 
 
@@ -44,6 +57,13 @@ async def async_main(args: argparse.Namespace) -> int:
         method, params = "control", {"command": args.operation}
     elif args.command == "vendor-read":
         method, params = "vendor.read", {"dp_ids": args.dp_ids}
+    elif args.command == "effect":
+        method = f"effect.{args.operation}"
+        params = (
+            {"name": args.name}
+            if args.operation in ("set", "select", "activate")
+            else {}
+        )
     else:
         method, params = "lighting", {"command": args.operation}
     try:

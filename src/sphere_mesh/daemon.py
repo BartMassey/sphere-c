@@ -36,6 +36,9 @@ from .vendor import (
     TuyaVendorController,
     VendorUnavailable,
     VendorUnsupported,
+    effect_catalog,
+    effect_name,
+    effect_selection,
     json_value,
 )
 
@@ -184,7 +187,16 @@ class SphereRuntime:
                     "invalid_params", "health does not accept parameters"
                 )
             return self.health()
-        if method not in ("control", "lighting", "vendor.read"):
+        if method == "effect.list":
+            if params:
+                raise ApiRequestError(
+                    "invalid_params", "effect.list does not accept parameters"
+                )
+            return {"effects": effect_catalog()}
+        if method not in (
+            "control", "lighting", "vendor.read", "effect.get",
+            "effect.set", "effect.select", "effect.activate",
+        ):
             raise ApiRequestError("unknown_method", f"unknown method: {method}")
         async with self._command_lock:
             session = self._supervisor.session
@@ -196,7 +208,9 @@ class SphereRuntime:
                 return await self._control(session, params)
             if method == "lighting":
                 return await self._lighting(session, params)
-            return await self._vendor_read(session, params)
+            if method == "vendor.read":
+                return await self._vendor_read(session, params)
+            return await self._effect(session, method, params)
 
     def health(self) -> dict:
         failure = self._supervisor.last_failure
@@ -298,6 +312,10 @@ class SphereRuntime:
             raise ApiRequestError("unavailable", str(exc)) from exc
         except AccessError as exc:
             raise ApiRequestError("protocol_error", str(exc)) from exc
+        return self._vendor_snapshot(data, dp_ids)
+
+    @staticmethod
+    def _vendor_snapshot(data, dp_ids: list[int]) -> dict:
         returned_ids = {record.dp_id for record in data.records}
         return {
             "command_type": data.command_type,
@@ -315,6 +333,61 @@ class SphereRuntime:
                 for record in data.records
             ],
         }
+
+    async def _effect(self, session, method: str, params: dict) -> dict:
+        if method == "effect.get":
+            if params:
+                raise ApiRequestError(
+                    "invalid_params", "effect.get does not accept parameters"
+                )
+        else:
+            if set(params) != {"name"}:
+                raise ApiRequestError(
+                    "invalid_params", f"{method} requires one name"
+                )
+            try:
+                values = effect_selection(params["name"])
+            except ValueError as exc:
+                raise ApiRequestError("invalid_params", str(exc)) from exc
+        controller = TuyaVendorController(
+            session.node, self._state.get("composition", {})
+        )
+        try:
+            if method == "effect.get":
+                data = await controller.read([2, 102])
+            elif method == "effect.activate":
+                mode_data = await controller.write({2: values[2]})
+                data = await controller.write({102: values[102]})
+            else:
+                data = await controller.write({102: values[102]})
+        except VendorUnsupported as exc:
+            raise ApiRequestError("unsupported", str(exc)) from exc
+        except VendorUnavailable as exc:
+            raise ApiRequestError("unavailable", str(exc)) from exc
+        except AccessError as exc:
+            raise ApiRequestError("protocol_error", str(exc)) from exc
+        snapshot = self._vendor_snapshot(data, [2, 102])
+        effect = None
+        for record in reversed(data.records):
+            if record.dp_id == 102:
+                if record.dp_type.name != "ENUM" or not 0 <= record.value <= 31:
+                    raise ApiRequestError(
+                        "protocol_error", "invalid DP 102 effect response"
+                    )
+                value = record.value
+                effect = effect_catalog()[value]
+                break
+        if method == "effect.get":
+            return {"effect": effect, "snapshot": snapshot}
+        result = {
+            "requested_effect": effect_name(values[102]),
+            "acknowledged": True,
+            "reported_effect": effect,
+            "response": self._vendor_snapshot(data, [102]),
+        }
+        if method == "effect.activate":
+            result["mode_response"] = self._vendor_snapshot(mode_data, [2])
+        return result
 
 
 class JsonLogFormatter(logging.Formatter):

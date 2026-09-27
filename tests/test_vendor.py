@@ -11,6 +11,10 @@ from sphere_mesh.vendor import (
     TuyaVendorController,
     VendorUnavailable,
     VendorUnsupported,
+    effect_catalog,
+    effect_selection,
+    effect_value,
+    guarded_dp_write,
     parse_tuya_dp_data,
     tuya_dp_read,
     tuya_dp_record,
@@ -47,6 +51,32 @@ def test_vendor_write_matches_derived_effect_vector():
     assert tuya_dp_write(records, ack=False) == bytes.fromhex(
         "cad00701020401660402"
     )
+    assert guarded_dp_write(effect_selection("colour_2")) == bytes.fromhex(
+        "c9d00701020401660402"
+    )
+
+
+def test_effect_catalog_preserves_schema_and_visible_picker():
+    catalog = effect_catalog()
+    assert len(catalog) == 32
+    assert catalog[0] == {"name": "flame", "value": 0, "label": "Flame", "visible": True}
+    assert catalog[7]["label"] == "Color Wheel"
+    assert catalog[31]["name"] == "colour_31"
+    assert {item["value"] for item in catalog if not item["visible"]} == {
+        5, 14, 19, 22, 23, 27,
+    }
+
+
+@pytest.mark.parametrize("name", ["colour_5", "colour_22", "colour_0", "colour_32", "colour_02", "red", 2])
+def test_effect_selection_rejects_non_visible_or_invalid_name(name):
+    with pytest.raises(ValueError):
+        effect_selection(name)
+
+
+@pytest.mark.parametrize("values", [{}, {1: 1}, {2: 4}, {102: 32}, {2: True}, {102: "2"}, {2: 1, 8: 0}])
+def test_guarded_write_rejects_unknown_or_invalid_datapoints(values):
+    with pytest.raises(AccessError):
+        guarded_dp_write(values)
 
 
 def test_parse_vendor_data_typed_records():
@@ -138,3 +168,66 @@ async def test_vendor_controller_reports_timeout():
 
     with pytest.raises(VendorUnavailable):
         await controller.read([2, 102])
+
+
+async def test_vendor_controller_write_accepts_empty_ack_and_snapshot_burst():
+    node = Mock()
+    node.received = deque()
+    empty = ReceivedMessage(src=0x0118, opcode=OP_TUYA_DP_DATA, params=b"\x01")
+    snapshot = ReceivedMessage(
+        src=0x0118, opcode=OP_TUYA_DP_DATA,
+        params=bytes.fromhex("01660402"),
+    )
+
+    async def request(*args, **kwargs):
+        node.received.extend((empty, snapshot))
+        return empty
+
+    node.request = AsyncMock(side_effect=request)
+    controller = TuyaVendorController(node, COMPOSITION, response_settle=0)
+    result = await controller.write(effect_selection("colour_2"))
+
+    assert [(record.dp_id, record.value) for record in result.records] == [(102, 2)]
+    node.request.assert_awaited_once_with(
+        0x0118, bytes.fromhex("c9d00701020401660402"),
+        OP_TUYA_DP_DATA, timeout=5.0, retries=0,
+    )
+
+
+async def test_vendor_controller_write_accepts_empty_ack_only():
+    node = Mock()
+    ack = ReceivedMessage(src=0x0118, opcode=OP_TUYA_DP_DATA, params=b"\x01")
+    node.received = deque([ack])
+    node.request = AsyncMock(return_value=ack)
+    controller = TuyaVendorController(node, COMPOSITION, response_settle=0)
+    result = await controller.write({2: 1})
+    assert result.records == ()
+
+
+async def test_vendor_controller_collects_burst_when_receive_history_is_full():
+    node = Mock()
+    node.received = deque(
+        [ReceivedMessage(src=0x0118, opcode=OP_TUYA_DP_DATA, params=b"\x01")],
+        maxlen=1,
+    )
+    response = ReceivedMessage(
+        src=0x0118, opcode=OP_TUYA_DP_DATA, params=bytes.fromhex("01660407")
+    )
+
+    async def request(*args, **kwargs):
+        node.received.append(response)
+        return response
+
+    node.request = AsyncMock(side_effect=request)
+    controller = TuyaVendorController(node, COMPOSITION, response_settle=0)
+    result = await controller.read([102])
+    assert [(record.dp_id, record.value) for record in result.records] == [(102, 7)]
+
+
+async def test_vendor_controller_write_reports_timeout():
+    node = Mock()
+    node.received = deque()
+    node.request = AsyncMock(side_effect=TimeoutError)
+    controller = TuyaVendorController(node, COMPOSITION)
+    with pytest.raises(VendorUnavailable, match="DP Write"):
+        await controller.write({102: effect_value("colour_2")})
