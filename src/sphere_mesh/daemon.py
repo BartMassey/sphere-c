@@ -379,6 +379,20 @@ class SphereRuntime:
                 break
         if method == "effect.get":
             return {"effect": effect, "snapshot": snapshot}
+        if effect is not None and effect["value"] != values[102]:
+            raise ApiRequestError(
+                "protocol_error",
+                "Sphere reported a different DP 102 effect than requested",
+            )
+        if method == "effect.activate":
+            for record in reversed(mode_data.records):
+                if record.dp_id == 2:
+                    if record.dp_type.name != "ENUM" or record.value != values[2]:
+                        raise ApiRequestError(
+                            "protocol_error",
+                            "Sphere reported a different DP 2 mode than requested",
+                        )
+                    break
         result = {
             "requested_effect": effect_name(values[102]),
             "acknowledged": True,

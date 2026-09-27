@@ -179,6 +179,22 @@ async def test_effect_set_requires_visible_name_and_reports_ack():
     )
 
 
+async def test_effect_set_rejects_a_contradictory_echo():
+    node = Mock()
+    node.received = deque()
+    response = message(OP_TUYA_DP_DATA, bytes.fromhex("01660407"))
+
+    async def request(*args, **kwargs):
+        node.received.append(response)
+        return response
+
+    node.request = AsyncMock(side_effect=request)
+    service, _ = runtime(node)
+    with pytest.raises(ApiRequestError) as failure:
+        await service.handle("effect.set", {"name": "colour_2"})
+    assert failure.value.code == "protocol_error"
+
+
 async def test_effect_activate_writes_mode_before_effect():
     node = Mock()
     node.received = deque()
