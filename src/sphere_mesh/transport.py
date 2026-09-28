@@ -207,7 +207,20 @@ class LocalTransport:
         return BleakScanner()
 
     async def connect(self, address_or_device, timeout: float = 30.0):
-        return await connect_local(address_or_device, timeout)
+        client = await connect_local(address_or_device, timeout)
+        from bleak.backends.bluezdbus.client import BleakClientBlueZDBus
+
+        backend = getattr(client, "_backend", None)
+        if isinstance(backend, BleakClientBlueZDBus):
+            try:
+                await backend._acquire_mtu()
+            except Exception as exc:
+                backend._mtu_size = 23
+                logger.warning(
+                    "could not acquire BlueZ ATT MTU; using 23 bytes: %s", exc
+                )
+            logger.info("BlueZ ATT MTU: %d bytes", client.mtu_size)
+        return client
 
     async def stop(self) -> None:
         pass

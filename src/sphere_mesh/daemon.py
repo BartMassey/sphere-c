@@ -8,6 +8,7 @@ import json
 import logging
 import signal
 import sys
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict
 from datetime import UTC, datetime
@@ -47,6 +48,7 @@ from .vendor import (
 logger = logging.getLogger("sphere-daemon")
 DEFAULT_STATE = Path("state/sphere_state.json")
 DEFAULT_SOCKET = Path("state/sphere.sock")
+EFFECT_MODE_SETTLE_SECONDS = 0.25
 PROXY_SCAN_SECONDS = 30.0
 DP_NAMES = {
     1: "switch_led",
@@ -67,6 +69,118 @@ DP_NAMES = {
     106: "factory_mode_reset",
     107: "water_mode",
 }
+TRACE_METHODS = frozenset(
+    (
+        "health", "status", "control", "lighting", "vendor.read", "effect.list",
+        "effect.get", "effect.set", "effect.select", "effect.activate",
+        "countdown.get", "countdown.set", "countdown.cancel",
+    )
+)
+
+
+def _interaction(event: str, **fields: object) -> None:
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug("interaction", extra={"interaction": {"event": event, **fields}})
+
+
+def _trace_params(method: str, params: dict) -> dict:
+    if not isinstance(params, dict):
+        return {"redacted": True}
+    if method in (
+        "health", "status", "effect.list", "effect.get", "countdown.get",
+        "countdown.cancel",
+    ):
+        return {} if not params else {"redacted": True}
+    if (
+        method == "control" and set(params) == {"command"}
+        and params["command"] in ("read", "on", "off", "toggle")
+    ):
+        return {"command": params["command"]}
+    if (
+        method == "lighting" and set(params) == {"command"}
+        and isinstance(params["command"], str)
+        and len(params["command"]) <= 128
+    ):
+        try:
+            parse_lighting_command(params["command"])
+        except ValueError:
+            pass
+        else:
+            return {"command": params["command"]}
+    if (
+        method == "vendor.read" and set(params) == {"dp_ids"}
+        and isinstance(params["dp_ids"], list)
+        and len(params["dp_ids"]) <= 255
+        and all(type(dp) is int and 0 <= dp <= 255 for dp in params["dp_ids"])
+    ):
+        return {"dp_ids": params["dp_ids"]}
+    if (
+        method in ("effect.set", "effect.select", "effect.activate")
+        and set(params) == {"name"}
+        and isinstance(params["name"], str)
+    ):
+        try:
+            effect_selection(params["name"])
+        except ValueError:
+            pass
+        else:
+            return {"name": params["name"]}
+    if (
+        method == "countdown.set" and set(params) == {"seconds"}
+        and type(params["seconds"]) is int
+        and 0 <= params["seconds"] <= 43200
+    ):
+        return {"seconds": params["seconds"]}
+    return {"redacted": True}
+
+
+def _trace_snapshot(snapshot: dict) -> dict:
+    return {
+        "command_type": snapshot.get("command_type"),
+        "missing_dp_ids": snapshot.get("missing_dp_ids"),
+        "datapoints": [
+            {key: record.get(key) for key in ("id", "name", "type", "value")}
+            for record in snapshot.get("datapoints", [])
+            if record.get("id") in DP_NAMES
+        ],
+    }
+
+
+def _trace_result(method: str, result: dict) -> dict:
+    if method in ("health", "status"):
+        return {
+            key: result.get(key)
+            for key in ("status", "connected", "generation", "device")
+        }
+    if method == "control":
+        return {"state": result.get("state")}
+    if method == "lighting":
+        return {"model": result.get("model"), "state": result.get("state")}
+    if method == "vendor.read":
+        return _trace_snapshot(result)
+    if method == "effect.list":
+        return {"count": len(result.get("effects", []))}
+    if method == "effect.get":
+        return {
+            "effect": (result.get("effect") or {}).get("slug"),
+            "snapshot": _trace_snapshot(result["snapshot"]),
+        }
+    if method.startswith("effect."):
+        traced = {
+            "requested_effect": result.get("requested_effect"),
+            "reported_effect": (result.get("reported_effect") or {}).get("slug"),
+            "response": _trace_snapshot(result["response"]),
+        }
+        if "mode_response" in result:
+            traced["mode_response"] = _trace_snapshot(result["mode_response"])
+        return traced
+    if method.startswith("countdown."):
+        snapshot = result.get("snapshot", result.get("response", {}))
+        return {
+            "seconds": result.get("seconds", result.get("requested_seconds")),
+            "response": _trace_snapshot(snapshot),
+        }
+    return {}
 
 
 def _verification(*, reported: bool, readback: bool) -> dict:
@@ -208,8 +322,60 @@ class SphereRuntime:
         self._store = store
         self._unicast = unicast
         self._command_lock = asyncio.Lock()
+        self._work_mode: int | None = None
+        self._work_mode_generation = supervisor.generation
 
     async def handle(self, method: str, params: dict) -> dict:
+        started = time.monotonic()
+        traced_method = method if method in TRACE_METHODS else "unknown"
+        _interaction(
+            "api.request", method=traced_method,
+            params=_trace_params(method, params),
+        )
+        try:
+            result = await self._handle(method, params)
+        except ApiRequestError as exc:
+            _interaction(
+                "api.error", method=traced_method, code=exc.code,
+                error_type=type(exc.__cause__ or exc).__name__,
+                elapsed_ms=round((time.monotonic() - started) * 1000),
+            )
+            raise
+        except Exception as exc:
+            _interaction(
+                "api.error", method=traced_method, error_type=type(exc).__name__,
+                elapsed_ms=round((time.monotonic() - started) * 1000),
+            )
+            raise
+        _interaction(
+            "api.result", method=traced_method, result=_trace_result(method, result),
+            elapsed_ms=round((time.monotonic() - started) * 1000),
+        )
+        return result
+
+    async def _mesh_operation(
+        self, action: str, details: dict, operation: Awaitable
+    ):
+        started = time.monotonic()
+        _interaction("mesh.request", action=action, **details)
+        try:
+            result = await operation
+        except Exception as exc:
+            _interaction(
+                "mesh.error", action=action, error_type=type(exc).__name__,
+                elapsed_ms=round((time.monotonic() - started) * 1000),
+            )
+            raise
+        fields = {
+            "action": action,
+            "elapsed_ms": round((time.monotonic() - started) * 1000),
+        }
+        if hasattr(result, "records"):
+            fields["response"] = _trace_snapshot(self._vendor_snapshot(result, []))
+        _interaction("mesh.response", **fields)
+        return result
+
+    async def _handle(self, method: str, params: dict) -> dict:
         if method in ("health", "status"):
             if params:
                 raise ApiRequestError(
@@ -302,7 +468,11 @@ class SphereRuntime:
             lambda: self._store.allocate_tid(self._state),
         )
         try:
-            result = await controller.execute(command)
+            result = await self._mesh_operation(
+                "control." + command,
+                {"element": f"0x{self._unicast:04x}"},
+                controller.execute(command),
+            )
         except ControlUnavailable as exc:
             raise ApiRequestError("unavailable", str(exc)) from exc
         return {
@@ -334,7 +504,11 @@ class SphereRuntime:
             lambda: self._store.allocate_tid(self._state),
         )
         try:
-            result = await controller.execute(command)
+            result = await self._mesh_operation(
+                "lighting." + command.model,
+                {"command": raw_command},
+                controller.execute(command),
+            )
         except LightingUnsupported as exc:
             raise ApiRequestError("unsupported", str(exc)) from exc
         except LightingUnavailable as exc:
@@ -372,7 +546,9 @@ class SphereRuntime:
             self._state.get("composition", {}),
         )
         try:
-            data = await controller.read(dp_ids)
+            data = await self._mesh_operation(
+                "vendor.read", {"dp_ids": dp_ids}, controller.read(dp_ids)
+            )
         except VendorUnsupported as exc:
             raise ApiRequestError("unsupported", str(exc)) from exc
         except VendorUnavailable as exc:
@@ -429,10 +605,15 @@ class SphereRuntime:
             session.node, self._state.get("composition", {})
         )
         try:
-            data = (
-                await controller.read([101]) if method == "countdown.get"
-                else await controller.write_countdown(seconds)
-            )
+            if method == "countdown.get":
+                data = await self._mesh_operation(
+                    "vendor.read", {"dp_ids": [101]}, controller.read([101])
+                )
+            else:
+                data = await self._mesh_operation(
+                    "vendor.write", {"dp_ids": [101], "seconds": seconds},
+                    controller.write_countdown(seconds),
+                )
         except VendorUnsupported as exc:
             raise ApiRequestError("unsupported", str(exc)) from exc
         except VendorUnavailable as exc:
@@ -485,6 +666,9 @@ class SphereRuntime:
         }
 
     async def _effect(self, session, method: str, params: dict) -> dict:
+        if self._work_mode_generation != self._supervisor.generation:
+            self._work_mode = None
+            self._work_mode_generation = self._supervisor.generation
         if method == "effect.get":
             if params:
                 raise ApiRequestError(
@@ -504,9 +688,31 @@ class SphereRuntime:
         )
         try:
             if method == "effect.get":
-                data = await controller.read([2, 102])
+                data = await self._mesh_operation(
+                    "vendor.read", {"dp_ids": [2, 102]}, controller.read([2, 102])
+                )
             elif method == "effect.activate":
-                mode_data = await controller.write({2: values[2]})
+                try:
+                    mode_data = await self._mesh_operation(
+                        "vendor.write.mode",
+                        {"dp_ids": [2], "value": values[2]},
+                        controller.write({2: values[2]}),
+                    )
+                except (VendorUnavailable, VendorUnsupported, AccessError) as exc:
+                    code = (
+                        "unavailable" if isinstance(exc, VendorUnavailable)
+                        else "unsupported" if isinstance(exc, VendorUnsupported)
+                        else "protocol_error"
+                    )
+                    raise ApiRequestError(
+                        code, str(exc),
+                        details={
+                            "completed_steps": [],
+                            "failed_step": "mode",
+                            "effect_write_attempted": False,
+                            "result_uncertain": True,
+                        },
+                    ) from exc
                 for record in mode_data.records:
                     if record.dp_id == 2 and (
                         record.dp_type is not TuyaDpType.ENUM
@@ -521,8 +727,24 @@ class SphereRuntime:
                                 "effect_write_attempted": False,
                             },
                         )
+                self._work_mode = values[2]
                 try:
-                    data = await controller.write({102: values[102]})
+                    await asyncio.sleep(EFFECT_MODE_SETTLE_SECONDS)
+                    for attempt in range(2):
+                        try:
+                            data = await self._mesh_operation(
+                                "vendor.write.effect",
+                                {
+                                    "dp_ids": [102], "value": values[102],
+                                    "attempt": attempt + 1,
+                                },
+                                controller.write({102: values[102]}),
+                            )
+                        except VendorUnavailable:
+                            if attempt == 0:
+                                continue
+                            raise
+                        break
                 except (VendorUnavailable, VendorUnsupported, AccessError) as exc:
                     code = (
                         "unavailable" if isinstance(exc, VendorUnavailable)
@@ -535,11 +757,16 @@ class SphereRuntime:
                             "completed_steps": ["mode_transport_acknowledged"],
                             "failed_step": "effect",
                             "effect_write_attempted": True,
+                            "effect_write_attempts": attempt + 1,
                             "result_uncertain": True,
                         },
                     ) from exc
             else:
-                data = await controller.write({102: values[102]})
+                data = await self._mesh_operation(
+                    "vendor.write.effect",
+                    {"dp_ids": [102], "value": values[102]},
+                    controller.write({102: values[102]}),
+                )
         except VendorUnsupported as exc:
             raise ApiRequestError("unsupported", str(exc)) from exc
         except VendorUnavailable as exc:
@@ -548,18 +775,33 @@ class SphereRuntime:
             raise ApiRequestError("protocol_error", str(exc)) from exc
         snapshot = self._vendor_snapshot(data, [2, 102])
         effect = None
+        reported_work_mode = None
         for record in reversed(data.records):
-            if record.dp_id == 102:
+            if record.dp_id == 2:
+                if record.dp_type is not TuyaDpType.ENUM or not 0 <= record.value <= 3:
+                    raise ApiRequestError(
+                        "protocol_error", "invalid DP 2 work mode response"
+                    )
+                reported_work_mode = record.value
+            if record.dp_id == 102 and effect is None:
                 if record.dp_type.name != "ENUM" or not 0 <= record.value <= 31:
                     raise ApiRequestError(
                         "protocol_error", "invalid DP 102 effect response"
                     )
                 value = record.value
                 effect = effect_catalog()[value]
-                break
         if method == "effect.get":
+            if reported_work_mode is not None:
+                self._work_mode = reported_work_mode
+            work_mode = self._work_mode
             return {
                 "effect": effect,
+                "work_mode": work_mode,
+                "effect_active": None if work_mode is None else work_mode == 1,
+                "work_mode_source": (
+                    "readback" if reported_work_mode is not None
+                    else "cached" if work_mode is not None else None
+                ),
                 "snapshot": snapshot,
                 "verification": _verification(
                     reported=effect is not None, readback=True
@@ -574,6 +816,7 @@ class SphereRuntime:
                         "completed_steps": ["mode_transport_acknowledged"],
                         "failed_step": "effect",
                         "effect_write_attempted": True,
+                        "effect_write_attempts": attempt + 1,
                         "result_uncertain": True,
                     }
                     if method == "effect.activate" else None
@@ -607,6 +850,8 @@ class JsonLogFormatter(logging.Formatter):
         }
         if record.exc_info:
             value["exception"] = self.formatException(record.exc_info)
+        if hasattr(record, "interaction"):
+            value["interaction"] = record.interaction
         return json.dumps(value, separators=(",", ":"))
 
 

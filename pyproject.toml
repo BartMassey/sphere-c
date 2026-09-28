@@ -13,6 +13,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+gui = [
+    "PySide6>=6.8,<7",
+]
 dev = [
     "pytest>=8",
     "pytest-asyncio>=0.24",
@@ -23,9 +26,18 @@ sphere-mesh = "sphere_mesh.provision:main"
 sphere-capture = "sphere_mesh.capture:main"
 sphere-meshctl = "sphere_mesh.client:main"
 sphere-meshd = "sphere_mesh.daemon:main"
+sphere-mesh-gui = "sphere_mesh.gui.app:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"sphere_mesh.gui" = ["qml/*.qml", "qml/**/*.qml", "assets/*", "assets/**/*"]
+
+[tool.setuptools.data-files]
+"share/applications" = ["packaging/desktop/sphere-mesh-gui.desktop"]
+"share/icons/hicolor/scalable/apps" = ["packaging/desktop/sphere-mesh-gui.svg"]
+"share/doc/sphere-mesh-lab" = ["packaging/desktop/ASSETS.md"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

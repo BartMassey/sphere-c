@@ -1,4 +1,6 @@
 from collections import deque
+import json
+import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -7,7 +9,7 @@ import pytest
 from btmesh.access import OP_GENERIC_ONOFF_STATUS, OP_LIGHT_LIGHTNESS_STATUS
 from btmesh.node import ReceivedMessage
 from sphere_mesh.api import ApiRequestError
-from sphere_mesh.daemon import DP_NAMES, SphereRuntime
+from sphere_mesh.daemon import DP_NAMES, JsonLogFormatter, SphereRuntime
 from sphere_mesh.vendor import OP_TUYA_DP_DATA
 
 
@@ -191,6 +193,64 @@ async def test_vendor_read_returns_typed_and_raw_datapoints():
     }
 
 
+async def test_verbose_interaction_trace_reports_decoded_vendor_data_without_keys(caplog):
+    node = Mock()
+    node.received = deque()
+    response = message(OP_TUYA_DP_DATA, bytes.fromhex("01660407"))
+
+    async def request(*args, **kwargs):
+        node.received.append(response)
+        return response
+
+    node.request = AsyncMock(side_effect=request)
+    service, state = runtime(node)
+    state["device_key"] = "private-device-key"
+    with caplog.at_level(logging.DEBUG, logger="sphere-daemon"):
+        await service.handle("vendor.read", {"dp_ids": [102]})
+
+    events = [record.interaction for record in caplog.records
+              if hasattr(record, "interaction")]
+    assert [event["event"] for event in events] == [
+        "api.request", "mesh.request", "mesh.response", "api.result"
+    ]
+    assert events[1]["dp_ids"] == [102]
+    assert events[2]["response"]["datapoints"] == [
+        {"id": 102, "name": "colour_mode", "type": "enum", "value": 7}
+    ]
+    assert "private-device-key" not in json.dumps(events)
+    assert "raw" not in json.dumps(events)
+    encoded = json.loads(JsonLogFormatter().format(caplog.records[-1]))
+    assert encoded["interaction"]["event"] == "api.result"
+
+
+async def test_verbose_interaction_trace_redacts_invalid_params_and_errors(caplog):
+    service, _ = runtime(connected=False)
+    with caplog.at_level(logging.DEBUG, logger="sphere-daemon"):
+        with pytest.raises(ApiRequestError):
+            await service.handle("vendor.read", {"dp_ids": "secret-key"})
+    events = [record.interaction for record in caplog.records
+              if hasattr(record, "interaction")]
+    assert events[0]["params"] == {"redacted": True}
+    assert events[-1]["code"] == "unavailable"
+    assert "secret-key" not in json.dumps(events)
+
+
+async def test_verbose_interaction_trace_marks_mesh_timeout(caplog):
+    node = Mock()
+    node.request = AsyncMock(side_effect=TimeoutError())
+    service, _ = runtime(node)
+    with caplog.at_level(logging.DEBUG, logger="sphere-daemon"):
+        with pytest.raises(ApiRequestError, match="did not answer OnOff Get"):
+            await service.handle("control", {"command": "read"})
+    events = [record.interaction for record in caplog.records
+              if hasattr(record, "interaction")]
+    assert [event["event"] for event in events] == [
+        "api.request", "mesh.request", "mesh.error", "api.error"
+    ]
+    assert events[2]["error_type"] == "ControlUnavailable"
+    assert events[3]["code"] == "unavailable"
+
+
 async def test_effect_list_is_available_without_bluetooth():
     service, _ = runtime(connected=False)
     result = await service.handle("effect.list", {})
@@ -217,6 +277,54 @@ async def test_effect_get_returns_current_vendor_snapshot():
         "value": 7, "label": "Color Wheel", "visible": True,
     }
     assert result["snapshot"]["missing_dp_ids"] == [2]
+    assert result["work_mode"] is None
+    assert result["effect_active"] is None
+    assert result["work_mode_source"] is None
+
+
+async def test_effect_get_reports_mode_and_keeps_last_acknowledged_mode():
+    node = Mock()
+    node.received = deque()
+    node.request = AsyncMock(side_effect=[
+        message(OP_TUYA_DP_DATA, bytes.fromhex("01020400660402")),
+        message(OP_TUYA_DP_DATA, b"\x01"),
+        message(OP_TUYA_DP_DATA, b"\x01"),
+        message(OP_TUYA_DP_DATA, bytes.fromhex("01660402")),
+        message(OP_TUYA_DP_DATA, bytes.fromhex("01020400660402")),
+    ])
+    service, _ = runtime(node)
+
+    inactive = await service.handle("effect.get", {})
+    assert inactive["effect"]["slug"] == "aurora"
+    assert inactive["work_mode"] == 0
+    assert inactive["effect_active"] is False
+    assert inactive["work_mode_source"] == "readback"
+
+    await service.handle("effect.activate", {"name": "aurora"})
+    active = await service.handle("effect.get", {})
+    assert active["work_mode"] == 1
+    assert active["effect_active"] is True
+    assert active["work_mode_source"] == "cached"
+
+    inactive = await service.handle("effect.get", {})
+    assert inactive["work_mode"] == 0
+    assert inactive["effect_active"] is False
+    assert inactive["work_mode_source"] == "readback"
+
+
+async def test_effect_mode_cache_expires_on_reconnect():
+    node = Mock()
+    node.received = deque()
+    node.request = AsyncMock(side_effect=[
+        message(OP_TUYA_DP_DATA, bytes.fromhex("01020401660402")),
+        message(OP_TUYA_DP_DATA, bytes.fromhex("01660402")),
+    ])
+    service, _ = runtime(node)
+    assert (await service.handle("effect.get", {}))["effect_active"] is True
+    service._supervisor.generation += 1
+    result = await service.handle("effect.get", {})
+    assert result["work_mode"] is None
+    assert result["effect_active"] is None
 
 
 async def test_effect_set_requires_visible_name_and_reports_ack():
@@ -312,6 +420,12 @@ async def test_effect_activate_stops_when_mode_write_times_out():
     with pytest.raises(ApiRequestError) as failure:
         await service.handle("effect.activate", {"name": "colour_2"})
     assert failure.value.code == "unavailable"
+    assert failure.value.details == {
+        "completed_steps": [],
+        "failed_step": "mode",
+        "effect_write_attempted": False,
+        "result_uncertain": True,
+    }
     assert node.request.await_count == 1
 
 
@@ -319,7 +433,7 @@ async def test_effect_activate_reports_partial_failure_after_mode_ack():
     node = Mock()
     node.received = deque()
     node.request = AsyncMock(side_effect=[
-        message(OP_TUYA_DP_DATA, b"\x01"), TimeoutError(),
+        message(OP_TUYA_DP_DATA, b"\x01"), TimeoutError(), TimeoutError(),
     ])
     service, _ = runtime(node)
     with pytest.raises(ApiRequestError) as failure:
@@ -329,8 +443,43 @@ async def test_effect_activate_reports_partial_failure_after_mode_ack():
         "completed_steps": ["mode_transport_acknowledged"],
         "failed_step": "effect",
         "effect_write_attempted": True,
+        "effect_write_attempts": 2,
         "result_uncertain": True,
     }
+    assert node.request.await_count == 3
+
+
+async def test_effect_activate_retries_only_effect_after_timeout():
+    node = Mock()
+    node.received = deque()
+    node.request = AsyncMock(side_effect=[
+        message(OP_TUYA_DP_DATA, bytes.fromhex("01020401")),
+        TimeoutError(),
+        message(OP_TUYA_DP_DATA, bytes.fromhex("01660402")),
+    ])
+    service, _ = runtime(node)
+    result = await service.handle("effect.activate", {"name": "aurora"})
+    assert result["acknowledged"] is True
+    assert result["reported_effect"]["slug"] == "aurora"
+    assert [call.args[1] for call in node.request.await_args_list] == [
+        bytes.fromhex("c9d00701020401"),
+        bytes.fromhex("c9d00701660402"),
+        bytes.fromhex("c9d00701660402"),
+    ]
+
+
+async def test_effect_activate_does_not_retry_contradictory_effect_echo():
+    node = Mock()
+    node.received = deque()
+    node.request = AsyncMock(side_effect=[
+        message(OP_TUYA_DP_DATA, bytes.fromhex("01020401")),
+        message(OP_TUYA_DP_DATA, bytes.fromhex("01660407")),
+    ])
+    service, _ = runtime(node)
+    with pytest.raises(ApiRequestError) as failure:
+        await service.handle("effect.activate", {"name": "aurora"})
+    assert failure.value.code == "protocol_error"
+    assert failure.value.details["effect_write_attempts"] == 1
     assert node.request.await_count == 2
 
 

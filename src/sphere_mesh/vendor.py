@@ -326,15 +326,26 @@ class TuyaVendorController:
         return await self._request(tuya_dp_read(dp_ids), "Read")
 
     async def write(self, values: dict[int, int]) -> TuyaDpData:
-        return await self._request(guarded_dp_write(values), "Write")
+        return await self._request(
+            guarded_dp_write(values), "Write", expected_dp_ids=frozenset(values)
+        )
 
     async def write_countdown(self, seconds: int) -> TuyaDpData:
-        return await self._request(countdown_dp_write(seconds), "Write")
+        return await self._request(
+            countdown_dp_write(seconds), "Write", expected_dp_ids=frozenset((101,))
+        )
 
-    async def _request(self, payload: bytes, operation: str) -> TuyaDpData:
+    async def _request(
+        self,
+        payload: bytes,
+        operation: str,
+        *,
+        expected_dp_ids: frozenset[int] = frozenset(),
+    ) -> TuyaDpData:
         address = vendor_model_element(self._composition)
         received = self._node.received
         previous_messages = {id(message) for message in received}
+        deadline = asyncio.get_running_loop().time() + self._timeout
         try:
             response = await self._node.request(
                 address,
@@ -348,23 +359,38 @@ class TuyaVendorController:
                 f"Sphere element {address:#06x} did not answer vendor DP {operation}"
             ) from exc
         await asyncio.sleep(self._response_settle)
-        messages = [
-            message
-            for message in received
-            if id(message) not in previous_messages
-            and message.src == address
-            and message.opcode == OP_TUYA_DP_DATA
-        ]
-        if response not in messages:
-            messages.insert(0, response)
-        parsed = [parse_tuya_dp_data(_payload(message)) for message in messages]
-        command_type = parsed[-1].command_type
-        if any(data.command_type != command_type for data in parsed):
-            raise AccessError("vendor DATA burst has inconsistent command types")
-        if operation == "Write" and command_type != 1:
-            raise AccessError("vendor Write response has unexpected command type")
-        records = tuple(record for data in parsed for record in data.records)
-        return TuyaDpData(command_type, records)
+        while True:
+            messages = [
+                message
+                for message in received
+                if id(message) not in previous_messages
+                and message.src == address
+                and message.opcode == OP_TUYA_DP_DATA
+            ]
+            if response not in messages:
+                messages.insert(0, response)
+            accepted_types = (1,) if operation == "Write" else (1, 5)
+            parsed = [
+                parse_tuya_dp_data(_payload(message))
+                for message in messages
+                if message.params and message.params[0] in accepted_types
+            ]
+            if operation == "Write":
+                parsed = [
+                    data for data in parsed
+                    if not data.records
+                    or any(record.dp_id in expected_dp_ids for record in data.records)
+                ]
+            if parsed:
+                command_type = parsed[-1].command_type
+                records = tuple(record for data in parsed for record in data.records)
+                return TuyaDpData(command_type, records)
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                raise AccessError(
+                    f"vendor {operation} received no supported DATA response"
+                )
+            await asyncio.sleep(min(0.05, remaining))
 
 
 def json_value(record: TuyaDpRecord) -> bool | int | str:

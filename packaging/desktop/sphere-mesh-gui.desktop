@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Sphere Mesh
+GenericName=Bluetooth Mesh light controller
+Comment=Control an Olight Sphere C through the local Sphere Mesh service
+Exec=sphere-mesh-gui
+Icon=sphere-mesh-gui
+Terminal=false
+Categories=Utility;
+StartupNotify=true

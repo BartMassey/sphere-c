@@ -1,3 +1,4 @@
+import asyncio
 from collections import deque
 from unittest.mock import AsyncMock, Mock
 
@@ -263,6 +264,105 @@ async def test_vendor_controller_collects_burst_when_receive_history_is_full():
     controller = TuyaVendorController(node, COMPOSITION, response_settle=0)
     result = await controller.read([102])
     assert [(record.dp_id, record.value) for record in result.records] == [(102, 7)]
+
+
+async def test_vendor_controller_read_ignores_special_data_before_snapshot():
+    node = Mock()
+    special = ReceivedMessage(
+        src=0x0118, opcode=OP_TUYA_DP_DATA, params=b"\x00"
+    )
+    snapshot = ReceivedMessage(
+        src=0x0118,
+        opcode=OP_TUYA_DP_DATA,
+        params=bytes.fromhex("01670200000064"),
+    )
+    node.received = deque()
+
+    async def request(*args, **kwargs):
+        node.received.extend((special, snapshot))
+        return special
+
+    node.request = AsyncMock(side_effect=request)
+    controller = TuyaVendorController(node, COMPOSITION, response_settle=0)
+    result = await controller.read([103])
+    assert [(record.dp_id, record.value) for record in result.records] == [
+        (103, 100)
+    ]
+
+
+async def test_vendor_controller_rejects_special_data_without_dp_response():
+    node = Mock()
+    special = ReceivedMessage(
+        src=0x0118, opcode=OP_TUYA_DP_DATA, params=b"\x00"
+    )
+    node.received = deque([special])
+    node.request = AsyncMock(return_value=special)
+    controller = TuyaVendorController(node, COMPOSITION, timeout=0.01, response_settle=0)
+    with pytest.raises(AccessError, match="no supported DATA response"):
+        await controller.read([103])
+
+
+async def test_vendor_controller_write_ignores_special_data_before_ack():
+    node = Mock()
+    special = ReceivedMessage(
+        src=0x0118, opcode=OP_TUYA_DP_DATA, params=b"\x00"
+    )
+    ack = ReceivedMessage(
+        src=0x0118, opcode=OP_TUYA_DP_DATA, params=b"\x01"
+    )
+    node.received = deque()
+
+    async def request(*args, **kwargs):
+        node.received.extend((special, ack))
+        return special
+
+    node.request = AsyncMock(side_effect=request)
+    controller = TuyaVendorController(node, COMPOSITION, response_settle=0)
+    result = await controller.write({102: 2})
+    assert result.command_type == 1
+    assert result.records == ()
+
+
+async def test_vendor_controller_write_waits_for_matching_echo_after_late_mode_data():
+    node = Mock()
+    mode_echo = ReceivedMessage(
+        src=0x0118, opcode=OP_TUYA_DP_DATA, params=bytes.fromhex("01020401")
+    )
+    effect_echo = ReceivedMessage(
+        src=0x0118, opcode=OP_TUYA_DP_DATA, params=bytes.fromhex("01660402")
+    )
+    node.received = deque()
+
+    async def request(*args, **kwargs):
+        node.received.append(mode_echo)
+
+        async def deliver_effect():
+            await asyncio.sleep(0.02)
+            node.received.append(effect_echo)
+
+        asyncio.create_task(deliver_effect())
+        return mode_echo
+
+    node.request = AsyncMock(side_effect=request)
+    controller = TuyaVendorController(
+        node, COMPOSITION, timeout=0.2, response_settle=0
+    )
+    result = await controller.write({102: 2})
+    assert [(record.dp_id, record.value) for record in result.records] == [(102, 2)]
+
+
+async def test_vendor_controller_write_does_not_accept_unrelated_echo():
+    node = Mock()
+    response = ReceivedMessage(
+        src=0x0118, opcode=OP_TUYA_DP_DATA, params=bytes.fromhex("01020401")
+    )
+    node.received = deque([response])
+    node.request = AsyncMock(return_value=response)
+    controller = TuyaVendorController(
+        node, COMPOSITION, timeout=0.01, response_settle=0
+    )
+    with pytest.raises(AccessError, match="no supported DATA response"):
+        await controller.write({102: 2})
 
 
 async def test_vendor_controller_write_reports_timeout():

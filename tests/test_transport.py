@@ -32,6 +32,69 @@ class FakeTransport:
         return outcome
 
 
+async def test_local_transport_acquires_bluez_mtu_before_reading_it(monkeypatch):
+    from bleak.backends.bluezdbus import client as bluez_client
+
+    class FakeBlueZBackend:
+        def __init__(self):
+            self._mtu_size = None
+            self.acquire_calls = 0
+
+        async def _acquire_mtu(self):
+            self.acquire_calls += 1
+            self._mtu_size = 69
+
+    class Client:
+        def __init__(self):
+            self._backend = FakeBlueZBackend()
+
+        @property
+        def mtu_size(self):
+            assert self._backend._mtu_size is not None
+            return self._backend._mtu_size
+
+    client = Client()
+    connect = AsyncMock(return_value=client)
+    monkeypatch.setattr(bluez_client, "BleakClientBlueZDBus", FakeBlueZBackend)
+    monkeypatch.setattr(sphere_transport, "connect_local", connect)
+
+    assert await sphere_transport.LocalTransport().connect("device", 12.0) is client
+    connect.assert_awaited_once_with("device", 12.0)
+    assert client._backend.acquire_calls == 1
+    assert client.mtu_size == 69
+    assert sphere_transport.GattBearer(client).max_frame == 66
+
+
+async def test_local_transport_uses_minimum_mtu_if_acquisition_fails(monkeypatch):
+    from bleak.backends.bluezdbus import client as bluez_client
+
+    class FakeBlueZBackend:
+        def __init__(self):
+            self._mtu_size = None
+
+        async def _acquire_mtu(self):
+            raise OSError("AcquireWrite unavailable")
+
+    class Client:
+        def __init__(self):
+            self._backend = FakeBlueZBackend()
+
+        @property
+        def mtu_size(self):
+            assert self._backend._mtu_size is not None
+            return self._backend._mtu_size
+
+    client = Client()
+    monkeypatch.setattr(bluez_client, "BleakClientBlueZDBus", FakeBlueZBackend)
+    monkeypatch.setattr(
+        sphere_transport, "connect_local", AsyncMock(return_value=client)
+    )
+
+    assert await sphere_transport.LocalTransport().connect("device") is client
+    assert client.mtu_size == 23
+    assert sphere_transport.GattBearer(client).max_frame == 20
+
+
 def bearer_factory(start_outcomes):
     outcomes = iter(start_outcomes)
     bearers = []
