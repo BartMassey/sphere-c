@@ -1,0 +1,121 @@
+{
+  "flame": {
+    "category": "animation",
+    "still": "flame.webp",
+    "animation": "flame.animated.webp"
+  },
+  "cotton-candy": {
+    "category": "animation",
+    "still": "cotton-candy.webp",
+    "animation": "cotton-candy.animated.webp"
+  },
+  "aurora": {
+    "category": "animation",
+    "still": "aurora.webp",
+    "animation": "aurora.animated.webp"
+  },
+  "fireworks": {
+    "category": "animation",
+    "still": "fireworks.webp",
+    "animation": "fireworks.animated.webp"
+  },
+  "fountain": {
+    "category": "animation",
+    "still": "fountain.webp",
+    "animation": "fountain.animated.webp"
+  },
+  "spiral": {
+    "category": "animation",
+    "still": "spiral.webp",
+    "animation": "spiral.animated.webp"
+  },
+  "red-flash": {
+    "category": "animation",
+    "still": "red-flash.webp",
+    "animation": "red-flash.animated.webp"
+  },
+  "confetti": {
+    "category": "animation",
+    "still": "confetti.webp",
+    "animation": "confetti.animated.webp"
+  },
+  "butterfly": {
+    "category": "animation",
+    "still": "butterfly.webp",
+    "animation": "butterfly.animated.webp"
+  },
+  "fireball": {
+    "category": "animation",
+    "still": "fireball.webp",
+    "animation": "fireball.animated.webp"
+  },
+  "gradient": {
+    "category": "animation",
+    "still": "gradient.webp",
+    "animation": "gradient.animated.webp"
+  },
+  "carousel": {
+    "category": "animation",
+    "still": "carousel.webp",
+    "animation": "carousel.animated.webp"
+  },
+  "magic-ball": {
+    "category": "animation",
+    "still": "magic-ball.webp",
+    "animation": "magic-ball.animated.webp"
+  },
+  "lilac": {
+    "category": "pattern",
+    "still": "lilac.webp"
+  },
+  "sunset": {
+    "category": "pattern",
+    "still": "sunset.webp"
+  },
+  "vibrant": {
+    "category": "pattern",
+    "still": "vibrant.webp"
+  },
+  "red-light": {
+    "category": "pattern",
+    "still": "red-light.webp"
+  },
+  "blue-sky": {
+    "category": "pattern",
+    "still": "blue-sky.webp"
+  },
+  "harvest": {
+    "category": "pattern",
+    "still": "harvest.webp"
+  },
+  "willow-wisp": {
+    "category": "animation",
+    "still": "willow-wisp.webp",
+    "animation": "willow-wisp.animated.webp"
+  },
+  "zombie": {
+    "category": "animation",
+    "still": "zombie.webp",
+    "animation": "zombie.animated.webp"
+  },
+  "phantom-purple": {
+    "category": "animation",
+    "still": "phantom-purple.webp",
+    "animation": "phantom-purple.animated.webp"
+  },
+  "christmas": {
+    "category": "animation",
+    "still": "christmas.webp",
+    "animation": "christmas.animated.webp"
+  },
+  "candy-cane": {
+    "category": "animation",
+    "still": "candy-cane.webp",
+    "animation": "candy-cane.animated.webp"
+  },
+  "snowfall": {
+    "category": "animation",
+    "still": "snowfall.webp",
+    "animation": "snowfall.animated.webp"
+  }
+}

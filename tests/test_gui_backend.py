@@ -377,3 +377,24 @@ def test_missing_daemon_is_reported(app, tmp_path):
         assert not backend.connected
     finally:
         backend.close()
+
+
+def test_preset_catalog_resolves_existing_media_and_handles_missing(tmp_path, monkeypatch):
+    from sphere_mesh.gui import backend as gui_backend
+
+    directory = tmp_path / "assets" / "presets"
+    directory.mkdir(parents=True)
+    (directory / "aurora.webp").write_bytes(b"preview")
+    (directory / "catalog.json").write_text(json.dumps({
+        "aurora": {"category": "animation", "still": "aurora.webp",
+                   "animation": "missing.gif"},
+        "bad": {"category": "pattern", "still": "../outside.webp"},
+    }))
+    monkeypatch.setattr(gui_backend, "files", lambda package: tmp_path)
+    catalog = gui_backend._preset_catalog()
+    assert catalog["aurora"]["category"] == "animation"
+    assert catalog["aurora"]["stillUrl"].startswith("file:")
+    assert catalog["aurora"]["animationUrl"] == ""
+    assert catalog["bad"]["stillUrl"] == ""
+    (directory / "catalog.json").write_text("invalid")
+    assert gui_backend._preset_catalog() == {}

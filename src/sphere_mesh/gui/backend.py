@@ -7,10 +7,11 @@ import os
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
+from importlib.resources import files
 from typing import Callable
 
 try:
-    from PySide6.QtCore import QObject, Property, QTimer, Signal, Slot
+    from PySide6.QtCore import QObject, Property, QTimer, QUrl, Signal, Slot
     from PySide6.QtGui import QGuiApplication
     from PySide6.QtNetwork import QLocalSocket
 except ImportError as exc:
@@ -21,6 +22,33 @@ except ImportError as exc:
 
 MAX_RESPONSE_BYTES = 64 * 1024
 MAX_LIGHT_VALUE = 0xFFFF
+
+
+def _preset_catalog() -> dict:
+    """Load bundled preview metadata, tolerating missing optional media."""
+    directory = files("sphere_mesh.gui").joinpath("assets", "presets")
+    try:
+        catalog = json.loads(directory.joinpath("catalog.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(catalog, dict):
+        return {}
+    result = {}
+    for slug, metadata in catalog.items():
+        if not isinstance(slug, str) or not isinstance(metadata, dict):
+            continue
+        category = metadata.get("category")
+        if category not in ("pattern", "animation"):
+            continue
+        entry = {"category": category, "stillUrl": "", "animationUrl": ""}
+        for key, target in (("still", "stillUrl"), ("animation", "animationUrl")):
+            name = metadata.get(key)
+            if isinstance(name, str) and Path(name).name == name:
+                resource = directory.joinpath(name)
+                if resource.is_file():
+                    entry[target] = QUrl.fromLocalFile(str(resource)).toString()
+        result[slug] = entry
+    return result
 
 
 def mesh_hsl_to_hsv(state: object) -> dict[str, int]:
@@ -96,6 +124,7 @@ class SphereBackend(QObject):
         poll_waiting_ms: int = 2000,
     ) -> None:
         super().__init__(parent)
+        self._preset_catalog = _preset_catalog()
         self._socket_path = str(Path(socket_path).expanduser().resolve())
         self._queue: deque[_Request] = deque()
         self._active: _Request | None = None
@@ -443,7 +472,10 @@ class SphereBackend(QObject):
             if isinstance(effects, list):
                 self._put(
                     effects=[
-                        item
+                        {**item, **self._preset_catalog.get(
+                            item.get("slug"),
+                            {"category": "pattern", "stillUrl": "", "animationUrl": ""},
+                        )}
                         for item in effects
                         if isinstance(item, dict)
                         and item.get("visible") is True

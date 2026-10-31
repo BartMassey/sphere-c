@@ -32,7 +32,7 @@ sphere-mesh-gui = "sphere_mesh.gui.app:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-"sphere_mesh.gui" = ["qml/*.qml", "qml/**/*.qml", "assets/*", "assets/**/*"]
+"sphere_mesh.gui" = ["qml/*.qml", "qml/**/*.qml", "qml/shaders/*.frag", "qml/shaders/*.qsb", "assets/*", "assets/**/*"]
 
 [tool.setuptools.data-files]
 "share/applications" = ["packaging/desktop/sphere-mesh-gui.desktop"]

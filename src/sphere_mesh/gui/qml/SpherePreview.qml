@@ -1,22 +1,19 @@
 import QtQuick
-import QtQuick.Controls
 
 Item {
     id: root
 
     property color sphereColor: "#7784e9"
     property bool active: false
-    property string effectLabel: ""
-    property color foreground: "#17243b"
-    property color muted: "#62718a"
 
-    implicitHeight: 184
+    implicitWidth: 60
+    implicitHeight: 60
 
     Rectangle {
         anchors.horizontalCenter: parent.horizontalCenter
-        y: 12
-        width: 182
-        height: 182
+        anchors.verticalCenter: parent.verticalCenter
+        width: parent.width
+        height: width
         radius: width / 2
         color: root.sphereColor
         opacity: root.active ? 0.09 : 0.04
@@ -24,9 +21,9 @@ Item {
 
     Rectangle {
         anchors.horizontalCenter: parent.horizontalCenter
-        y: 30
-        width: 146
-        height: 146
+        anchors.verticalCenter: parent.verticalCenter
+        width: parent.width * 0.8
+        height: width
         radius: width / 2
         color: root.sphereColor
         opacity: root.active ? 0.17 : 0.07
@@ -35,9 +32,9 @@ Item {
     Rectangle {
         id: orb
         anchors.horizontalCenter: parent.horizontalCenter
-        y: 46
-        width: 116
-        height: 116
+        anchors.verticalCenter: parent.verticalCenter
+        width: parent.width * 0.64
+        height: width
         radius: width / 2
         color: root.active ? root.sphereColor : "#9eaab9"
         border.color: root.active ? Qt.lighter(root.sphereColor, 1.35) : "#cad2df"
@@ -59,10 +56,10 @@ Item {
         }
 
         Rectangle {
-            x: 21
-            y: 16
-            width: 42
-            height: 20
+            x: parent.width * 0.18
+            y: parent.height * 0.14
+            width: parent.width * 0.36
+            height: parent.height * 0.17
             radius: height / 2
             rotation: -28
             color: "white"
@@ -71,22 +68,13 @@ Item {
 
         Rectangle {
             anchors.horizontalCenter: parent.horizontalCenter
-            y: 83
-            width: 64
-            height: 2
+            y: parent.height * 0.72
+            width: parent.width * 0.55
+            height: Math.max(1, parent.height * 0.017)
             radius: 1
             color: "white"
             opacity: 0.24
         }
     }
 
-    Label {
-        objectName: "sphereStateLabel"
-        anchors.horizontalCenter: parent.horizontalCenter
-        y: 168
-        text: root.active ? (root.effectLabel ? root.effectLabel : qsTr("Light on")) : qsTr("Light off")
-        color: root.active ? root.foreground : root.muted
-        font.pixelSize: 13
-        font.weight: Font.Medium
-    }
 }

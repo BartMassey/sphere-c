@@ -101,6 +101,7 @@ from pathlib import Path
 import tempfile
 from PySide6.QtCore import QObject, QMetaObject
 from PySide6.QtGui import QGuiApplication
+from PySide6.QtTest import QTest
 from PySide6.QtQml import QQmlApplicationEngine
 from sphere_mesh.gui.backend import SphereBackend
 
@@ -114,13 +115,43 @@ root = engine.rootObjects()[0]
 feedback = root.findChild(QObject, "feedbackCard")
 state_label = root.findChild(QObject, "sphereStateLabel")
 assert state_label is not None
-backend._put(connected=True, power=True, effect={"label": "Aurora"}, effectActive=True)
+backend._put(connected=True, power=True,
+             effects=[{"slug": "aurora", **backend._preset_catalog["aurora"]}],
+             effect={"slug": "aurora", "label": "Aurora"}, effectActive=True)
 app.processEvents()
 assert root.property("currentPage") == 0
 assert state_label.property("text") == "Aurora"
+main_preview = root.findChild(QObject, "mainPreview")
+main_recording = root.findChild(QObject, "mainRecordedPreview")
+assert main_preview.property("visible")
+assert main_preview.property("width") <= 60
+assert main_recording.property("visible")
+assert main_recording.property("animate")
+assert main_recording.property("animationUrl").toString().endswith("aurora.animated.webp")
+QTest.qWait(350)
+main_animation = main_recording.findChild(QObject, "recordedAnimation")
+assert main_animation is not None
+assert main_animation.property("frameCount") > 1
+frame = main_animation.property("currentFrame")
+QTest.qWait(160)
+assert main_animation.property("currentFrame") != frame
 backend._put(effectActive=False)
 app.processEvents()
 assert state_label.property("text") == "Light on"
+assert not main_recording.property("visible")
+backend._put(effectActive=True, effect={"slug": "blue-sky", "label": "Blue sky"},
+             effects=[{"slug": "blue-sky", **backend._preset_catalog["blue-sky"]}])
+app.processEvents()
+assert main_recording.property("visible")
+assert main_recording.property("stillUrl").toString().endswith("blue-sky.webp")
+assert main_recording.property("animationUrl").toString() == ""
+backend._put(power=False)
+app.processEvents()
+assert not main_recording.property("visible")
+off_preview = root.findChild(QObject, "mainPreviewOff")
+assert off_preview.property("visible")
+assert off_preview.property("color").name() == "#000000"
+assert not root.findChild(QObject, "mainPreviewIllustration").property("visible")
 backend._put(connected=False, power=None)
 shared_controls = root.findChild(QObject, "sharedLightControls")
 pages = root.findChild(QObject, "pages")
@@ -146,7 +177,10 @@ assert pages.property("height") > 0
 assert shared_controls.property("y") + shared_controls.property("height") <= pages.property("y")
 root.setProperty("currentPage", 2)
 app.processEvents()
-assert not shared_controls.property("visible")
+assert shared_controls.property("visible")
+assert power_button.property("visible")
+assert main_preview.property("visible")
+assert not brightness_slider.property("visible")
 root.setProperty("currentPage", 0)
 app.processEvents()
 assert shared_controls.property("visible")
@@ -225,7 +259,9 @@ repeater = root.findChild(QObject, "effectRepeater")
 search = root.findChild(QObject, "effectSearch")
 assert grid is not None and repeater is not None and search is not None
 effects = [
-    {"slug": "effect-" + str(index), "label": "Effect " + str(index), "visible": True}
+    {"slug": "effect-" + str(index), "label": "Effect " + str(index), "visible": True,
+     "category": "pattern" if index < 20 else "animation",
+     "animationUrl": "file:///missing-preview.gif" if index == 20 else ""}
     for index in range(25)
 ]
 effects.append({"slug": "hidden", "label": "Hidden", "visible": False})
@@ -234,14 +270,29 @@ root.setProperty("currentPage", 1)
 app.processEvents()
 backend._put(effectActive=True)
 app.processEvents()
-assert repeater.property("count") == 25
+assert repeater.property("count") == 20
 tiles = [item for item in grid.childItems() if item.objectName() == "effectTile"]
-assert len(tiles) == 25
+assert len(tiles) == 20
 by_slug = {tile.property("effectSlug"): tile for tile in tiles}
 assert grid.property("columns") == 3
-assert all(tile.property("height") == 60 for tile in tiles)
+assert all(tile.property("height") > 60 for tile in tiles)
 assert len({round(by_slug["effect-" + str(index)].property("x")) for index in range(3)}) == 3
 assert by_slug["effect-2"].property("selected")
+brightness_slider = root.findChild(QObject, "brightnessSlider")
+dimming = by_slug["effect-2"].findChild(QObject, "effectPreviewRendering")
+brightness_slider.setProperty("previewValue", 100)
+app.processEvents()
+assert abs(dimming.property("gain") - 3.4) < 1e-6
+brightness_slider.setProperty("previewValue", 0)
+app.processEvents()
+assert abs(dimming.property("gain") - 0.2) < 1e-6
+brightness_slider.setProperty("previewValue", 50)
+app.processEvents()
+assert abs(dimming.property("gain") - 1.8) < 1e-6
+brightness_slider.setProperty("previewValue", 25)
+app.processEvents()
+assert abs(dimming.property("gain") - 1) < 1e-6
+
 assert grid.property("height") > root.findChild(QObject, "effectsScroll").property("height")
 root.setProperty("width", 320)
 app.processEvents()
@@ -264,6 +315,34 @@ assert target.property("activeFocus")
 QTest.keyClick(root, Qt.Key_Return)
 assert calls[-1].method == "effect.activate"
 assert calls[-1].params == {"name": "effect-1"}
+search.setProperty("text", "")
+root.setProperty("effectCategory", "animation")
+app.processEvents()
+assert repeater.property("count") == 5
+animations = [item for item in grid.childItems() if item.objectName() == "effectTile"]
+assert all(tile.property("effectSlug") in {"effect-" + str(i) for i in range(20, 25)} for tile in animations)
+assert all(not tile.findChild(QObject, "effectAnimationLoader").property("active") for tile in animations)
+assert all(tile.findChild(QObject, "previewFallback").property("visible") for tile in animations)
+animated = next(tile for tile in animations if tile.property("effectSlug") == "effect-20")
+animated.forceActiveFocus()
+app.processEvents()
+loader = animated.findChild(QObject, "effectAnimationLoader")
+assert loader.property("active")
+animation_dimming = animated.findChild(QObject, "effectPreviewRendering")
+brightness_slider.setProperty("previewValue", 0)
+app.processEvents()
+assert abs(animation_dimming.property("gain") - 0.2) < 1e-6
+brightness_slider.setProperty("previewValue", 100)
+app.processEvents()
+assert abs(animation_dimming.property("gain") - 3.4) < 1e-6
+assert len(calls) == 1
+root.setProperty("currentPage", 0)
+app.processEvents()
+assert not loader.property("active")
+root.setProperty("currentPage", 1)
+search.setProperty("text", "Effect 21")
+app.processEvents()
+assert repeater.property("count") == 1
 """
     result = subprocess.run(
         [sys.executable, "-c", script],

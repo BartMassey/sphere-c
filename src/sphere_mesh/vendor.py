@@ -344,7 +344,8 @@ class TuyaVendorController:
     ) -> TuyaDpData:
         address = vendor_model_element(self._composition)
         received = self._node.received
-        previous_messages = {id(message) for message in received}
+        # Retain old messages so deque eviction cannot recycle their IDs.
+        previous_messages = {id(message): message for message in received}
         deadline = asyncio.get_running_loop().time() + self._timeout
         try:
             response = await self._node.request(

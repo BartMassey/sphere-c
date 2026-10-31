@@ -1,0 +1,791 @@
+{
+  "license": "CC0-1.0",
+  "creator": "Bart Massey",
+  "permission": "Bart Massey approved CC0 for captured footage and derived previews on 2026-10-31.",
+  "capture_date": "2026-10-31",
+  "source_recordings": [
+    {
+      "source": "raw/sphere-c-preset-library-2026-10-31-take-2.mkv",
+      "sha256": "dc6c62eeef4d04c67541fe9718cd8299d899f2c2e99a7578f5de707351e879d8",
+      "bytes": 1985681641
+    }
+  ],
+  "processing": "Actual camera frames, crop/scale, optional recorded color correction and WebP encoding; no generated artwork.",
+  "encoding": {
+    "still": "libwebp, 320x320, quality 90",
+    "animation": "libwebp_anim, 320x320, 15 fps, quality 90"
+  },
+  "presets": {
+    "flame": {
+      "label": "Flame",
+      "value": 0,
+      "classification": "Animation",
+      "source": "raw/sphere-c-preset-library-2026-10-31-take-2.mkv",
+      "clip_start_seconds": 7.5571,
+      "clip_end_seconds": 32.580284,
+      "poster_source_seconds": 23.97376666666667,
+      "independent_readback_matches": true,
+      "crop_xywh_source": [
+        610,
+        100,
+        600,
+        600
+      ],
+      "crop_xywh_review_clip": [
+        610,
+        100,
+        600,
+        600
+      ],
+      "loop_start_seconds_in_take": 1.2,
+      "loop_duration_seconds": 10.6
+    },
+    "cotton-candy": {
+      "label": "Cotton Candy",
+      "value": 1,
+      "classification": "Animation",
+      "source": "raw/sphere-c-preset-library-2026-10-31-take-2.mkv",
+      "clip_start_seconds": 35.480193,
+      "clip_end_seconds": 60.403372,
+      "poster_source_seconds": 51.230193,
+      "independent_readback_matches": true,
+      "crop_xywh_source": [
+        610,
+        100,
+        600,
+        600
+      ],
+      "crop_xywh_review_clip": [
+        610,
+        100,
+        600,
+        600
+      ],
+      "loop_start_seconds_in_take": 0.6,
+      "loop_duration_seconds": 11.4
+    },
+    "aurora": {
+      "label": "Aurora",
+      "value": 2,
+      "classification": "Animation",
+      "source": "raw/sphere-c-preset-library-2026-10-31-take-2.mkv",
+      "clip_start_seconds": 63.303281,
+      "clip_end_seconds": 88.294456,
+      "poster_source_seconds": 65.81994766666666,
+      "independent_readback_matches": true,
+      "crop_xywh_source": [
+        610,
+        100,
+        600,
+        600
+      ],
+      "crop_xywh_review_clip": [
+        610,
+        100,
+        600,
+        600
+      ],
+      "loop_start_seconds_in_take": 1.4,
+      "loop_duration_seconds": 10.4
+    },
+    "fireworks": {
+      "label": "Fireworks",
+      "value": 3,
+      "classification": "Animation",
+      "source": "raw/sphere-c-preset-library-2026-10-31-take-2.mkv",
+      "clip_start_seconds": 91.130364,
+      "clip_end_seconds": 116.153548,
+      "poster_source_seconds": 92.280364,
+      "independent_readback_matches": true,
+      "crop_xywh_source": [
+        610,
+        100,
+        600,
+        600
+      ],
+      "crop_xywh_review_clip": [
+        610,
+        100,
+        600,
+        600
+      ],
+      "loop_start_seconds_in_take": 3.0,
+      "loop_duration_seconds": 12.0
+    },
+    "fountain": {
+      "label": "Fountain",
+      "value": 4,
+      "classification": "Animation",
+      "source": "raw/sphere-c-preset-library-2026-10-31-take-2.mkv",
+      "clip_start_seconds": 118.953451,
+      "clip_end_seconds": 143.976641,
+      "poster_source_seconds": 123.33678433333334,
+      "independent_readback_matches": true,
+      "crop_xywh_source": [
+        610,
+        100,
+        600,
+        600
+      ],
+      "crop_xywh_review_clip": [
+        610,
+        100,
+        600,
+        600
+      ],
+      "loop_start_seconds_in_take": 1.6,
+      "loop_duration_seconds": 10.8
+    },
+    "spiral": {
+      "label": "Spiral",
+      "value": 6,
+      "classification": "Animation",
+      "source": "raw/sphere-c-preset-library-2026-10-31-take-2.mkv",
+      "clip_start_seconds": 146.87654,
+      "clip_end_seconds": 171.90372,
+      "poster_source_seconds": 149.52654,
+      "independent_readback_matches": true,
+      "crop_xywh_source": [
+        610,
+        100,
+        600,
+        600
+      ],
+      "crop_xywh_review_clip": [
+        610,
+        100,
+        600,
+        600
+      ],
+      "loop_start_seconds_in_take": 3.0,
+      "loop_duration_seconds": 11.0
+    },
+    "red-flash": {
+      "label": "Red Flash",
+      "value": 8,
+      "classification": "Animation",
+      "source": "raw/sphere-c-preset-library-2026-10-31-take-2.mkv",
+      "clip_start_seconds": 174.699635,
+      "clip_end_seconds": 199.726807,
+      "poster_source_seconds": 190.349635,
+      "independent_readback_matches": true,
+      "crop_xywh_source": [
+        610,
+        100,
+        600,
+        600
+      ],
+      "crop_xywh_review_clip": [
+        610,
+        100,
+        600,
+        600
+      ],
+      "loop_start_seconds_in_take": 0.6,
+      "loop_duration_seconds": 9.4
+    },
+    "confetti": {
+      "label": "Confetti",
+      "value": 9,
+      "classification": "Animation",
+      "source": "raw/sphere-c-preset-library-2026-10-31-take-2.mkv",
+      "clip_start_seconds": 202.626711,
+      "clip_end_seconds": 227.649893,
+      "poster_source_seconds": 205.94337766666666,
+      "independent_readback_matches": true,
+      "crop_xywh_source": [
+        610,
+        100,
+        600,
+        600
+      ],
+      "crop_xywh_review_clip": [
+        610,
+        100,
+        600,
+        600
+      ],
+      "loop_start_seconds_in_take": 0.4,
+      "loop_duration_seconds": 8.2
+    },
+    "butterfly": {
+      "label": "Butterfly",
+      "value": 10,
+      "classification": "Animation",
+      "source": "raw/sphere-c-preset-library-2026-10-31-take-2.mkv",
+      "clip_start_seconds": 230.549801,
+      "clip_end_seconds": 255.47299,
+      "poster_source_seconds": 247.46646766666666,
+      "independent_readback_matches": true,
+      "crop_xywh_source": [
+        610,
+        100,
+        600,
+        600
+      ],
+      "crop_xywh_review_clip": [
+        610,
+        100,
+        600,
+        600
+      ],
+      "loop_start_seconds_in_take": 0.0,
+      "loop_duration_seconds": 12.0
+    },
+    "fireball": {
+      "label": "Fireball",
+      "value": 11,
+      "classification": "Animation",
+      "source": "raw/sphere-c-preset-library-2026-10-31-take-2.mkv",
+      "clip_start_seconds": 258.272892,
+      "clip_end_seconds": 283.300068,
+      "poster_source_seconds": 278.48955866666665,
+      "independent_readback_matches": true,
+      "crop_xywh_source": [
+        610,
+        100,
+        600,
+        600
+      ],
+      "crop_xywh_review_clip": [
+        610,
+        100,
+        600,
+        600
+      ],
+      "loop_start_seconds_in_take": 2.4,
+      "loop_duration_seconds": 11.0
+    },
+    "gradient": {
+      "label": "Gradient",
+      "value": 12,
+      "classification": "Animation",
+      "source": "raw/sphere-c-preset-library-2026-10-31-take-2.mkv",
+      "clip_start_seconds": 286.29597,
+      "clip_end_seconds": 311.223153,
+      "poster_source_seconds": 296.74597,
+      "independent_readback_matches": true,
+      "crop_xywh_source": [
+        610,
+        100,
+        600,
+        600
+      ],
+      "crop_xywh_review_clip": [
+        610,
+        100,
+        600,
+        600
+      ],
+      "loop_start_seconds_in_take": 1.6,
+      "loop_duration_seconds": 9.0
+    },
+    "carousel": {
+      "label": "Carousel",
+      "value": 13,
+      "classification": "Animation",
+      "source": "raw/sphere-c-preset-library-2026-10-31-take-2.mkv",
+      "clip_start_seconds": 314.12306,
+      "clip_end_seconds": 339.146247,
+      "poster_source_seconds": 320.10639333333336,
+      "independent_readback_matches": true,
+      "crop_xywh_source": [
+        610,
+        100,
+        600,
+        600
+      ],
+      "crop_xywh_review_clip": [
+        610,
+        100,
+        600,
+        600
+      ],
+      "loop_start_seconds_in_take": 0.4,
+      "loop_duration_seconds": 8.4
+    },
+    "magic-ball": {
+      "label": "Magic Ball",
+      "value": 15,
+      "classification": "Animation",
+      "source": "raw/sphere-c-preset-library-2026-10-31-take-2.mkv",
+      "clip_start_seconds": 341.94615,
+      "clip_end_seconds": 366.969333,
+      "poster_source_seconds": 360.69615,
+      "independent_readback_matches": true,
+      "crop_xywh_source": [
+        610,
+        100,
+        600,
+        600
+      ],
+      "crop_xywh_review_clip": [
+        610,
+        100,
+        600,
+        600
+      ],
+      "loop_start_seconds_in_take": 0.0,
+      "loop_duration_seconds": 8.4
+    },
+    "lilac": {
+      "label": "Lilac",
+      "value": 16,
+      "classification": "Pattern (steady during 25-second take)",
+      "source": "raw/sphere-c-preset-library-2026-10-31-take-2.mkv",
+      "clip_start_seconds": 369.769247,
+      "clip_end_seconds": 394.79642,
+      "poster_source_seconds": 382.419247,
+      "independent_readback_matches": true,
+      "crop_xywh_source": [
+        610,
+        100,
+        600,
+        600
+      ]
+    },
+    "sunset": {
+      "label": "Sunset",
+      "value": 17,
+      "classification": "Pattern (steady during 25-second take)",
+      "source": "raw/sphere-c-preset-library-2026-10-31-take-2.mkv",
+      "clip_start_seconds": 397.592336,
+      "clip_end_seconds": 422.61952,
+      "poster_source_seconds": 397.70900266666666,
+      "independent_readback_matches": true,
+      "crop_xywh_source": [
+        610,
+        100,
+        600,
+        600
+      ]
+    },
+    "vibrant": {
+      "label": "Vibrant",
+      "value": 18,
+      "classification": "Pattern (steady during 25-second take)",
+      "source": "raw/sphere-c-preset-library-2026-10-31-take-2.mkv",
+      "clip_start_seconds": 425.519418,
+      "clip_end_seconds": 450.442617,
+      "poster_source_seconds": 425.769418,
+      "independent_readback_matches": true,
+      "crop_xywh_source": [
+        610,
+        100,
+        600,
+        600
+      ]
+    },
+    "red-light": {
+      "label": "Red Light",
+      "value": 20,
+      "classification": "Pattern (steady during 25-second take)",
+      "source": "raw/sphere-c-preset-library-2026-10-31-take-2.mkv",
+      "clip_start_seconds": 453.34252,
+      "clip_end_seconds": 478.365702,
+      "poster_source_seconds": 466.95918666666665,
+      "independent_readback_matches": true,
+      "crop_xywh_source": [
+        610,
+        100,
+        600,
+        600
+      ]
+    },
+    "blue-sky": {
+      "label": "Blue sky",
+      "value": 21,
+      "classification": "Pattern (steady during 25-second take)",
+      "source": "raw/sphere-c-preset-library-2026-10-31-take-2.mkv",
+      "clip_start_seconds": 481.16561,
+      "clip_end_seconds": 506.192791,
+      "poster_source_seconds": 482.4822766666667,
+      "independent_readback_matches": true,
+      "crop_xywh_source": [
+        610,
+        100,
+        600,
+        600
+      ]
+    },
+    "harvest": {
+      "label": "Harvest",
+      "value": 24,
+      "classification": "Pattern (steady during 25-second take)",
+      "source": "raw/sphere-c-preset-library-2026-10-31-take-2.mkv",
+      "clip_start_seconds": 509.092691,
+      "clip_end_seconds": 534.11588,
+      "poster_source_seconds": 510.7093576666667,
+      "independent_readback_matches": true,
+      "crop_xywh_source": [
+        610,
+        100,
+        600,
+        600
+      ]
+    },
+    "willow-wisp": {
+      "label": "Willow Wisp",
+      "value": 25,
+      "classification": "Animation",
+      "source": "raw/sphere-c-preset-library-2026-10-31-take-2.mkv",
+      "clip_start_seconds": 537.115783,
+      "clip_end_seconds": 562.138969,
+      "poster_source_seconds": 548.9324496666667,
+      "independent_readback_matches": true,
+      "crop_xywh_source": [
+        610,
+        100,
+        600,
+        600
+      ],
+      "crop_xywh_review_clip": [
+        610,
+        100,
+        600,
+        600
+      ],
+      "loop_start_seconds_in_take": 1.8,
+      "loop_duration_seconds": 10.2
+    },
+    "zombie": {
+      "label": "Zombie",
+      "value": 26,
+      "classification": "Animation",
+      "source": "raw/sphere-c-preset-library-2026-10-31-take-2.mkv",
+      "clip_start_seconds": 564.938881,
+      "clip_end_seconds": 589.966049,
+      "poster_source_seconds": 582.4555476666667,
+      "independent_readback_matches": true,
+      "crop_xywh_source": [
+        610,
+        100,
+        600,
+        600
+      ],
+      "crop_xywh_review_clip": [
+        610,
+        100,
+        600,
+        600
+      ],
+      "loop_start_seconds_in_take": 1.6,
+      "loop_duration_seconds": 8.4
+    },
+    "phantom-purple": {
+      "label": "Phantom Purple",
+      "value": 28,
+      "classification": "Animation",
+      "source": "raw/sphere-c-preset-library-2026-10-31-take-2.mkv",
+      "clip_start_seconds": 592.861953,
+      "clip_end_seconds": 617.889132,
+      "poster_source_seconds": 596.1786196666667,
+      "independent_readback_matches": true,
+      "crop_xywh_source": [
+        610,
+        100,
+        600,
+        600
+      ],
+      "crop_xywh_review_clip": [
+        610,
+        100,
+        600,
+        600
+      ],
+      "loop_start_seconds_in_take": 2.8,
+      "loop_duration_seconds": 10.4
+    },
+    "christmas": {
+      "label": "Christmas",
+      "value": 29,
+      "classification": "Animation",
+      "source": "raw/sphere-c-preset-library-2026-10-31-take-2.mkv",
+      "clip_start_seconds": 620.68904,
+      "clip_end_seconds": 645.712221,
+      "poster_source_seconds": 632.2723733333333,
+      "independent_readback_matches": true,
+      "crop_xywh_source": [
+        610,
+        100,
+        600,
+        600
+      ],
+      "crop_xywh_review_clip": [
+        610,
+        100,
+        600,
+        600
+      ],
+      "loop_start_seconds_in_take": 2.6,
+      "loop_duration_seconds": 10.8
+    },
+    "candy-cane": {
+      "label": "Candy Cane",
+      "value": 30,
+      "classification": "Animation",
+      "source": "raw/sphere-c-preset-library-2026-10-31-take-2.mkv",
+      "clip_start_seconds": 648.512129,
+      "clip_end_seconds": 673.535307,
+      "poster_source_seconds": 667.5954623333333,
+      "independent_readback_matches": true,
+      "crop_xywh_source": [
+        610,
+        100,
+        600,
+        600
+      ],
+      "crop_xywh_review_clip": [
+        610,
+        100,
+        600,
+        600
+      ],
+      "loop_start_seconds_in_take": 0.6,
+      "loop_duration_seconds": 10.0
+    },
+    "snowfall": {
+      "label": "Snowfall",
+      "value": 31,
+      "classification": "Animation",
+      "source": "raw/sphere-c-preset-library-2026-10-31-take-2.mkv",
+      "clip_start_seconds": 676.435217,
+      "clip_end_seconds": 701.462392,
+      "poster_source_seconds": 685.2185503333333,
+      "independent_readback_matches": true,
+      "crop_xywh_source": [
+        610,
+        100,
+        600,
+        600
+      ],
+      "crop_xywh_review_clip": [
+        610,
+        100,
+        600,
+        600
+      ],
+      "loop_start_seconds_in_take": 1.8,
+      "loop_duration_seconds": 9.2
+    }
+  },
+  "color_correction": {
+    "lut": "camera-color-correction.cube",
+    "purpose": "Provisional preview correction only; original videos remain unchanged.",
+    "method": "Decode sRGB to linear RGB; inverse measured primary response; normalize each row to neutral white while preserving measured white green luminance; clamp and encode sRGB.",
+    "reference": "sphere-c-color-calibration-2026-10-31-take-2.json",
+    "camera": "Logitech C615",
+    "focus": 102,
+    "exposure_absolute": 3,
+    "gain": 0,
+    "white_balance": 6500,
+    "limitations": [
+      "Commanded LED colors are approximate references, not measured colorimetric standards.",
+      "Negative or above-gamut channels are clamped.",
+      "Not a general ICC camera profile or a calibration for other camera settings."
+    ],
+    "linear_rgb_matrix": [
+      [
+        1.278644242281491,
+        -0.05785696756797415,
+        -0.028774805142363715
+      ],
+      [
+        -0.00625222901552638,
+        1.6759940702782525,
+        -0.26270160203961873
+      ],
+      [
+        -0.00031078925061644834,
+        -0.1796680513059358,
+        0.4623271225985683
+      ]
+    ],
+    "samples": [
+      {
+        "label": "red-100",
+        "raw_rgb": [
+          104.45,
+          1.88,
+          1.04
+        ],
+        "corrected_rgb": [
+          117.21,
+          0.0,
+          0.0
+        ],
+        "raw_hsv": [
+          0.5,
+          99.0,
+          41.0
+        ],
+        "corrected_hsv": [
+          0.0,
+          100.0,
+          46.0
+        ]
+      },
+      {
+        "label": "green-100",
+        "raw_rgb": [
+          14.4,
+          81.89,
+          50.67
+        ],
+        "corrected_rgb": [
+          0.0,
+          101.83,
+          0.0
+        ],
+        "raw_hsv": [
+          152.2,
+          82.4,
+          32.1
+        ],
+        "corrected_hsv": [
+          120.0,
+          100.0,
+          39.9
+        ]
+      },
+      {
+        "label": "blue-100",
+        "raw_rgb": [
+          27.11,
+          68.38,
+          164.28
+        ],
+        "corrected_rgb": [
+          0.0,
+          0.0,
+          111.92
+        ],
+        "raw_hsv": [
+          221.9,
+          83.5,
+          64.4
+        ],
+        "corrected_hsv": [
+          240.0,
+          100.0,
+          43.9
+        ]
+      },
+      {
+        "label": "white-100",
+        "raw_rgb": [
+          100.23,
+          106.21,
+          163.63
+        ],
+        "corrected_rgb": [
+          106.21,
+          106.21,
+          106.21
+        ],
+        "raw_hsv": [
+          234.3,
+          38.7,
+          64.2
+        ],
+        "corrected_hsv": [
+          0.0,
+          0.0,
+          41.7
+        ]
+      },
+      {
+        "label": "yellow-50",
+        "raw_rgb": [
+          67.6,
+          45.13,
+          25.68
+        ],
+        "corrected_rgb": [
+          75.46,
+          57.2,
+          0.0
+        ],
+        "raw_hsv": [
+          27.8,
+          62.0,
+          26.5
+        ],
+        "corrected_hsv": [
+          45.5,
+          100.0,
+          29.6
+        ]
+      },
+      {
+        "label": "cyan-50",
+        "raw_rgb": [
+          21.61,
+          74.2,
+          116.95
+        ],
+        "corrected_rgb": [
+          2.95,
+          74.1,
+          74.7
+        ],
+        "raw_hsv": [
+          206.9,
+          81.5,
+          45.9
+        ],
+        "corrected_hsv": [
+          180.5,
+          96.0,
+          29.3
+        ]
+      },
+      {
+        "label": "magenta-50",
+        "raw_rgb": [
+          70.6,
+          37.01,
+          101.94
+        ],
+        "corrected_rgb": [
+          77.28,
+          0.0,
+          68.12
+        ],
+        "raw_hsv": [
+          271.0,
+          63.7,
+          40.0
+        ],
+        "corrected_hsv": [
+          307.1,
+          100.0,
+          30.3
+        ]
+      },
+      {
+        "label": "white-25",
+        "raw_rgb": [
+          48.61,
+          44.1,
+          71.51
+        ],
+        "corrected_rgb": [
+          52.83,
+          44.21,
+          43.82
+        ],
+        "raw_hsv": [
+          249.9,
+          38.3,
+          28.0
+        ],
+        "corrected_hsv": [
+          2.6,
+          17.1,
+          20.7
+        ]
+      }
+    ]
+  }
+}

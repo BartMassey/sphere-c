@@ -1,0 +1,17 @@
+SPDX-License-Identifier: CC0-1.0
+
+The photographic preset stills and animation previews in this
+directory are dedicated to the public domain under CC0 1.0
+Universal by Bart Massey, who approved that dedication on
+2026-10-31 for the captured footage and derived previews.
+
+https://creativecommons.org/publicdomain/zero/1.0/
+
+Source: Logitech C615 recordings of Bart Massey's Sphere C,
+captured by Codex at his direction on 2026-10-31.
+No artwork or preview media was copied from the Olight app.
+
+See provenance.json for recording hashes, preset identifiers,
+source times, verification, and loop extraction details.
+The application code and original interface illustrations
+retain their separate repository license.

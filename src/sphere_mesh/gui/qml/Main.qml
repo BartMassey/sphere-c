@@ -14,6 +14,7 @@ ApplicationWindow {
     title: qsTr("Sphere C")
 
     property int currentPage: 0
+    property string effectCategory: "pattern"
     readonly property bool darkMode: systemPalette.window.hslLightness < 0.5
     readonly property color canvasColor: darkMode ? "#111a2a" : "#f5f7fb"
     readonly property color cardColor: darkMode ? "#1b2940" : "#ffffff"
@@ -48,6 +49,16 @@ ApplicationWindow {
         return Number(values[name] || 0)
     }
 
+    function currentEffectMedia() {
+        var slug = (sphere.effect || ({})).slug
+        var catalog = sphere.effects || []
+        for (var index = 0; index < catalog.length; index++) {
+            if (catalog[index].slug === slug)
+                return catalog[index]
+        }
+        return ({})
+    }
+
     function effectLabel() {
         var selection = sphere.effect || ({})
         return selection.label || ""
@@ -67,6 +78,12 @@ ApplicationWindow {
 
     function previewBrightness(position) {
         return 0.62 + 0.38 * Math.max(0, Math.min(1, position / 100))
+    }
+
+    // The knob already expresses perceived brightness; do not exponentiate it again.
+    // Dim source footage needs headroom above its unchanged level at 25%.
+    function effectPreviewBrightness(position) {
+        return 0.2 + 3.2 * Math.max(0, Math.min(1, position / 100))
     }
 
     function applySelectedColor() {
@@ -91,7 +108,8 @@ ApplicationWindow {
         for (var index = 0; index < catalog.length; index++) {
             var effect = catalog[index]
             var label = effect.label || effect.name || ""
-            if (effect.visible !== false && label.toLowerCase().indexOf(needle) !== -1)
+            if (effect.visible !== false && (effect.category || "pattern") === effectCategory
+                    && label.toLowerCase().indexOf(needle) !== -1)
                 matches.push(effect)
         }
         return matches
@@ -165,11 +183,6 @@ ApplicationWindow {
                     font.weight: Font.Bold
                 }
 
-                Label {
-                    text: qsTr("Your light, your mood")
-                    color: root.muted
-                    font.pixelSize: 11
-                }
             }
 
             Rectangle {
@@ -194,17 +207,6 @@ ApplicationWindow {
                     font.weight: Font.DemiBold
                 }
             }
-        }
-
-        SpherePreview {
-            Layout.fillWidth: true
-            Layout.preferredHeight: root.height < 650 ? 110 : 184
-            sphereColor: root.previewColor
-            active: sphere.power === true && sphere.connected
-            effectLabel: sphere.effectActive || sphere.colorModeActive
-                         ? root.effectLabel() : ""
-            foreground: root.foreground
-            muted: root.muted
         }
 
         Rectangle {
@@ -283,7 +285,6 @@ ApplicationWindow {
 
         ColumnLayout {
             objectName: "sharedLightControls"
-            visible: root.currentPage === 0 || root.currentPage === 1
             Layout.fillWidth: true
             Layout.preferredHeight: visible ? implicitHeight : 0
             Layout.bottomMargin: visible ? 12 : 0
@@ -291,7 +292,8 @@ ApplicationWindow {
 
             Rectangle {
                 Layout.fillWidth: true
-                Layout.preferredHeight: root.height < 650 ? 66 : 74
+                objectName: "globalPowerCard"
+                Layout.preferredHeight: root.height < 650 ? 76 : 92
                 radius: 16
                 color: root.cardColor
                 border.width: 1
@@ -300,6 +302,41 @@ ApplicationWindow {
                 RowLayout {
                     anchors.fill: parent
                     anchors.margins: root.height < 650 ? 10 : 16
+
+                    Item {
+                        objectName: "mainPreview"
+                        Layout.preferredWidth: root.width < 380 ? 48 : 60
+                        Layout.preferredHeight: Layout.preferredWidth
+                        readonly property var media: root.currentEffectMedia()
+                        readonly property bool showEffect: sphere.connected && sphere.power === true
+                                                           && sphere.effectActive && !!media.stillUrl
+
+                        Rectangle {
+                            objectName: "mainPreviewOff"
+                            anchors.fill: parent
+                            visible: sphere.power === false
+                            color: "black"
+                        }
+
+                        SpherePreview {
+                            objectName: "mainPreviewIllustration"
+                            anchors.fill: parent
+                            visible: sphere.power !== false && (!parent.showEffect || !mainRecording.ready)
+                            sphereColor: root.previewColor
+                            active: sphere.power === true && sphere.connected
+                        }
+
+                        RecordedPreview {
+                            id: mainRecording
+                            objectName: "mainRecordedPreview"
+                            anchors.fill: parent
+                            visible: parent.showEffect
+                            stillUrl: visible ? parent.media.stillUrl || "" : ""
+                            animationUrl: visible ? parent.media.animationUrl || "" : ""
+                            animate: visible
+                            gain: root.effectPreviewBrightness(brightnessSlider.previewValue)
+                        }
+                    }
 
                     ColumnLayout {
                         Layout.fillWidth: true
@@ -313,8 +350,12 @@ ApplicationWindow {
                         }
 
                         Label {
-                            text: !root.capability("power") ? qsTr("Unavailable on this device")
-                                  : sphere.power ? qsTr("Sphere is on") : qsTr("Sphere is off")
+                            objectName: "sphereStateLabel"
+                            Layout.fillWidth: true
+                            text: !sphere.connected || sphere.power !== true ? qsTr("Light off")
+                                  : sphere.effectActive || sphere.colorModeActive ? root.effectLabel()
+                                  : qsTr("Light on")
+                            elide: Text.ElideRight
                             color: root.muted
                             font.pixelSize: 11
                         }
@@ -332,8 +373,9 @@ ApplicationWindow {
             }
 
             Rectangle {
+                visible: root.currentPage === 0 || root.currentPage === 1
                 Layout.fillWidth: true
-                Layout.preferredHeight: root.height < 650 ? 82 : 95
+                Layout.preferredHeight: visible ? (root.height < 650 ? 82 : 95) : 0
                 radius: 16
                 color: root.cardColor
                 border.width: 1
@@ -518,10 +560,36 @@ ApplicationWindow {
 
                     Label {
                         Layout.fillWidth: true
-                        text: qsTr("Choose a built-in look for Sphere C")
+                        text: sphere.effectActive && root.effectLabel() !== ""
+                              ? qsTr("Active: %1").arg(root.effectLabel())
+                              : qsTr("Choose a built-in look for Sphere C")
                         color: root.muted
                         font.pixelSize: 12
                         wrapMode: Text.WordWrap
+                    }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Button {
+                            objectName: "patternsSelector"
+                            text: qsTr("Patterns")
+                            checkable: true
+                            autoExclusive: true
+                            checked: root.effectCategory === "pattern"
+                            Layout.fillWidth: true
+                            Accessible.name: text
+                            onClicked: root.effectCategory = "pattern"
+                        }
+                        Button {
+                            objectName: "animationsSelector"
+                            text: qsTr("Animations")
+                            checkable: true
+                            autoExclusive: true
+                            checked: root.effectCategory === "animation"
+                            Layout.fillWidth: true
+                            Accessible.name: text
+                            onClicked: root.effectCategory = "animation"
+                        }
                     }
 
                     TextField {
@@ -569,7 +637,7 @@ ApplicationWindow {
 
                                 Layout.preferredWidth: (effectsGrid.width - (effectsGrid.columns - 1)
                                                         * effectsGrid.columnSpacing) / effectsGrid.columns
-                                Layout.preferredHeight: 60
+                                Layout.preferredHeight: Layout.preferredWidth + 44
                                 Layout.fillWidth: true
 
                                 Rectangle {
@@ -582,9 +650,44 @@ ApplicationWindow {
                                     border.color: effectTile.activeFocus ? root.foreground
                                                               : selected ? root.accent : root.borderColor
 
+                                    Item {
+                                        id: preview
+                                        anchors.top: parent.top
+                                        anchors.left: parent.left
+                                        anchors.right: parent.right
+                                        anchors.margins: 5
+                                        height: width
+                                        clip: true
+
+                                        RecordedPreview {
+                                            id: recordedPreview
+                                            objectName: "effectPreviewRendering"
+                                            anchors.fill: parent
+                                            stillUrl: modelData.stillUrl || ""
+                                            animationUrl: modelData.animationUrl || ""
+                                            animate: root.currentPage === 1
+                                                     && (tileMouse.containsMouse || effectTile.activeFocus || selected)
+                                            gain: root.effectPreviewBrightness(brightnessSlider.previewValue)
+                                        }
+
+                                        Label {
+                                            objectName: "previewFallback"
+                                            z: 1
+                                            anchors.centerIn: parent
+                                            visible: !recordedPreview.ready
+                                            text: qsTr("Preview unavailable")
+                                            color: root.muted
+                                            font.pixelSize: 11
+                                        }
+
+                                    }
+
                                     Label {
-                                        anchors.fill: parent
-                                        anchors.margins: 8
+                                        anchors.top: preview.bottom
+                                        anchors.bottom: parent.bottom
+                                        anchors.left: parent.left
+                                        anchors.right: parent.right
+                                        anchors.margins: 4
                                         text: effectName
                                         color: root.foreground
                                         font.pixelSize: 13
@@ -597,7 +700,9 @@ ApplicationWindow {
                                     }
 
                                     MouseArea {
+                                        id: tileMouse
                                         anchors.fill: parent
+                                        hoverEnabled: true
                                         enabled: root.controlsReady && root.capability("effects")
                                         cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
                                         onClicked: root.selectEffect(effectSlug)

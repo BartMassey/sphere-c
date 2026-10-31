@@ -212,6 +212,39 @@ async def test_vendor_controller_reports_timeout():
         await controller.read([2, 102])
 
 
+async def test_vendor_controller_reads_complete_bursts_after_history_wraps():
+    node = Mock()
+    node.received = deque(
+        (ReceivedMessage(0x0118, OP_TUYA_DP_DATA, b"\x01") for _ in range(8)),
+        maxlen=8,
+    )
+
+    async def response(*args, **kwargs):
+        first = None
+        for params in (
+            b"\x01",
+            bytes.fromhex("01070200000000"),
+            bytes.fromhex("01650200000000"),
+            bytes.fromhex("0166041d"),
+            bytes.fromhex("01670200000064"),
+            bytes.fromhex("01680100"),
+        ):
+            message = ReceivedMessage(0x0118, OP_TUYA_DP_DATA, params)
+            node.received.append(message)
+            if first is None:
+                first = message
+        return first
+
+    node.request = AsyncMock(side_effect=response)
+    controller = TuyaVendorController(node, COMPOSITION, response_settle=0)
+
+    for _ in range(6):
+        result = await controller.read([2, 102])
+        assert [(record.dp_id, record.value) for record in result.records] == [
+            (7, 0), (101, 0), (102, 29), (103, 100), (104, False),
+        ]
+
+
 async def test_vendor_controller_write_accepts_empty_ack_and_snapshot_burst():
     node = Mock()
     node.received = deque()
