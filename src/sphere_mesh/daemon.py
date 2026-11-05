@@ -10,6 +10,7 @@ import signal
 import sys
 import time
 from collections.abc import Awaitable, Callable
+from contextlib import asynccontextmanager
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
@@ -20,6 +21,7 @@ from btmesh.bearer import BearerError
 from btmesh.crypto import k3
 
 from .api import ApiRequestError, UnixApiServer
+from .bluez_mesh import open_bluez_mesh_session
 from .control import BasicController, ControlUnavailable
 from .lighting import (
     LightingController,
@@ -30,6 +32,7 @@ from .lighting import (
 from .state import StateError, StateLockedError, StateStore
 from .transport import (
     LocalTransport,
+    adapter_selector,
     find_proxy_node,
     open_mesh_proxy_session,
 )
@@ -256,6 +259,10 @@ class ConnectionSupervisor:
 
     async def stop(self) -> None:
         self._stopping.set()
+        await self.suspend()
+
+    async def suspend(self) -> None:
+        """Release the bearer without permanently stopping supervision."""
         task = self._task
         if task is None:
             return
@@ -324,6 +331,16 @@ class SphereRuntime:
         self._command_lock = asyncio.Lock()
         self._work_mode: int | None = None
         self._work_mode_generation = supervisor.generation
+
+    def _composition(self) -> dict:
+        """Use this node's metadata, falling back only for the legacy target."""
+        entry = self._state.get("devices", {}).get(f"0x{self._unicast:04x}", {})
+        if "composition" in entry:
+            return entry["composition"]
+        active = self._state.get("active_device")
+        if active is None or active == f"0x{self._unicast:04x}":
+            return self._state.get("composition", {})
+        return {}
 
     async def handle(self, method: str, params: dict) -> dict:
         started = time.monotonic()
@@ -395,6 +412,9 @@ class SphereRuntime:
         ):
             raise ApiRequestError("unknown_method", f"unknown method: {method}")
         async with self._command_lock:
+            validate = getattr(self, "_validate_target", None)
+            if validate is not None:
+                validate()
             session = self._supervisor.session
             if session is None:
                 raise ApiRequestError(
@@ -423,7 +443,7 @@ class SphereRuntime:
         }
 
     def status(self) -> dict:
-        composition = self._state.get("composition", {})
+        composition = self._composition()
         sig_models = {
             model
             for element in composition.get("elements", [])
@@ -500,7 +520,7 @@ class SphereRuntime:
             raise ApiRequestError("invalid_params", str(exc)) from exc
         controller = LightingController(
             session.node,
-            self._state.get("composition", {}),
+            self._composition(),
             lambda: self._store.allocate_tid(self._state),
         )
         try:
@@ -543,7 +563,7 @@ class SphereRuntime:
             )
         controller = TuyaVendorController(
             session.node,
-            self._state.get("composition", {}),
+            self._composition(),
         )
         try:
             data = await self._mesh_operation(
@@ -602,7 +622,7 @@ class SphereRuntime:
                 )
             seconds = 0
         controller = TuyaVendorController(
-            session.node, self._state.get("composition", {})
+            session.node, self._composition()
         )
         try:
             if method == "countdown.get":
@@ -684,7 +704,7 @@ class SphereRuntime:
             except ValueError as exc:
                 raise ApiRequestError("invalid_params", str(exc)) from exc
         controller = TuyaVendorController(
-            session.node, self._state.get("composition", {})
+            session.node, self._composition()
         )
         try:
             if method == "effect.get":
@@ -840,6 +860,184 @@ class SphereRuntime:
         return result
 
 
+class MeshRuntime:
+    """Route explicit device requests over one shared network context.
+
+    Each Sphere retains its own capability and mode cache. The shared
+    command lock also excludes enrollment from ordinary transactions.
+    """
+
+    def __init__(self, supervisor, state: dict, store: StateStore) -> None:
+        self.supervisor = supervisor
+        self.state = state
+        self.store = store
+        self.command_lock = asyncio.Lock()
+        self.enrollment = None
+        self._runtimes: dict[str, SphereRuntime] = {}
+        self._responses: dict[str, dict] = {}
+
+    def members(self) -> dict:
+        return {
+            key: entry for key, entry in self.state["devices"].items()
+            if not entry.get("superseded_by")
+        }
+
+    def inventory(self) -> dict:
+        """Expose device metadata without keys or private provisioning data."""
+        return {"devices": [
+            {
+                "device": key, "name": entry.get("name", key),
+                "configured": bool(entry.get("official_config_complete")),
+                "firmware_version": entry.get("firmware_version"),
+                "element_count": entry.get("element_count"),
+                **self._responses.get(key, {}),
+            }
+            for key, entry in self.members().items()
+        ]}
+
+    def _target(self, value) -> str:
+        members = self.members()
+        if value is None:
+            if len(members) != 1:
+                raise ApiRequestError(
+                    "device_required", "Choose a device by address or name",
+                )
+            return next(iter(members))
+        if not isinstance(value, str) or not value:
+            raise ApiRequestError("invalid_params", "device must be an address or name")
+        try:
+            address = int(value, 16)
+        except ValueError:
+            address = None
+        matches = [key for key, entry in members.items()
+                   if key == value or entry.get("name") == value
+                   or (address is not None and int(key, 16) == address)]
+        if len(matches) != 1:
+            raise ApiRequestError("unknown_device", "Device is unknown or ambiguous")
+        return matches[0]
+
+    def runtime(self, key: str) -> SphereRuntime:
+        if key not in self._runtimes:
+            runtime = SphereRuntime(
+                self.supervisor, self.state, self.store, int(key, 16),
+            )
+            runtime._command_lock = self.command_lock
+            runtime._validate_target = lambda: self._validate_current(key)
+            self._runtimes[key] = runtime
+        return self._runtimes[key]
+
+    def _validate_current(self, key: str) -> None:
+        entry = self.members().get(key)
+        if entry is None:
+            raise ApiRequestError("unknown_device", "Device was superseded while request was queued")
+        if entry.get("official_config_complete") is False:
+            raise ApiRequestError("unavailable", "Device configuration is incomplete")
+
+    @asynccontextmanager
+    async def exclusive(self):
+        """Serialize commissioning without detaching the BlueZ relay node."""
+        async with self.command_lock:
+            session = self.supervisor.session
+            if session is not None and hasattr(session, "refresh_properties"):
+                await session.refresh_properties()
+                if (session.properties.get("IvUpdate")
+                        or session.properties.get("IvIndex") != self.state["iv_index"]):
+                    raise ApiRequestError(
+                        "unavailable", "Mesh IV state changed; enrollment requires reconciliation",
+                    )
+                async with session.pause_advertising():
+                    try:
+                        yield
+                    finally:
+                        await session.refresh_devices()
+                return
+            await self.supervisor.suspend()
+            try:
+                yield
+            finally:
+                self.supervisor.start()
+
+    async def handle(self, method: str, params: dict) -> dict:
+        if method == "device.list":
+            if params:
+                raise ApiRequestError("invalid_params", "device.list takes no parameters")
+            return self.inventory()
+        if method.startswith("enrollment."):
+            if self.enrollment is None:
+                if method == "enrollment.status" and not params:
+                    return {"active": False, "available": False,
+                            "reason": "Experimental enrollment is disabled"}
+                raise ApiRequestError(
+                    "unavailable",
+                    "Shared-adapter enrollment is experimental; use --experimental-enrollment to test it",
+                )
+            if method == "enrollment.start":
+                if set(params) - {"duration"}:
+                    raise ApiRequestError("invalid_params", "Expected optional duration")
+                duration = params.get("duration", 120)
+                if type(duration) not in (int, float) or not 1 <= duration <= 3600:
+                    raise ApiRequestError("invalid_params", "duration must be 1..3600 seconds")
+                try:
+                    return self.enrollment.start(duration)
+                except ValueError as exc:
+                    raise ApiRequestError("invalid_params", str(exc)) from exc
+            if params:
+                raise ApiRequestError("invalid_params", "Enrollment command takes no parameters")
+            if method == "enrollment.status":
+                return self.enrollment.status()
+            if method == "enrollment.stop":
+                return await self.enrollment.stop()
+            raise ApiRequestError("unknown_method", f"unknown method: {method}")
+        if method == "device.rename":
+            if set(params) != {"device", "name"}:
+                raise ApiRequestError("invalid_params", "Expected device and name")
+            name = params["name"]
+            if not isinstance(name, str) or not name.strip() or len(name) > 64:
+                raise ApiRequestError("invalid_params", "name must contain 1..64 characters")
+            async with self.command_lock:
+                key = self._target(params["device"])
+                if any(e.get("name") == name.strip() and k != key
+                       for k, e in self.members().items()):
+                    raise ApiRequestError("invalid_params", "Device name already exists")
+                self.state["devices"][key]["name"] = name.strip()
+                self.store.save(self.state)
+            return {"device": key, "name": name.strip()}
+        if method == "health" and not params:
+            session = self.supervisor.session
+            return {
+                "status": "connected" if session is not None else "connecting",
+                "connected": session is not None,
+                "generation": self.supervisor.generation,
+                "device": next(iter(self.members())) if len(self.members()) == 1 else None,
+                "last_failure": (
+                    str(self.supervisor.last_failure)
+                    if self.supervisor.last_failure is not None else None
+                ),
+                "links": getattr(session, "links", []) if session is not None else [],
+                **self.inventory(),
+            }
+        if method == "effect.list":
+            if params:
+                raise ApiRequestError("invalid_params", "effect.list takes no parameters")
+            return {"effects": effect_catalog()}
+        params = dict(params)
+        key = self._target(params.pop("device", None))
+        entry = self.state["devices"][key]
+        if entry.get("official_config_complete") is False and method not in ("health", "status"):
+            raise ApiRequestError("unavailable", "Device configuration is incomplete")
+        try:
+            result = await self.runtime(key).handle(method, params)
+        except ApiRequestError as exc:
+            if exc.code == "unavailable":
+                self._responses[key] = {"last_error": str(exc)}
+            raise
+        if method not in ("health", "status"):
+            self._responses[key] = {
+                "last_response_utc": datetime.now(UTC).isoformat(), "last_error": None,
+            }
+        return {**result, "device": key}
+
+
 class JsonLogFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         value = {
@@ -868,11 +1066,47 @@ def setup_logging(verbose: bool) -> None:
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run the local Sphere service")
+    parser = argparse.ArgumentParser(
+        description="Control Spheres through a GATT proxy or a native Mesh node",
+        epilog=("Mesh mode attaches to the system bluetooth-meshd service; "
+                "configure its exclusive controller separately. A second adapter "
+                "can remain available for ordinary Bluetooth. This command does "
+                "not change controller ownership or system services."),
+    )
     parser.add_argument("--state", type=Path, default=DEFAULT_STATE)
     parser.add_argument("--socket", type=Path, default=DEFAULT_SOCKET)
     parser.add_argument("--verbose", action="store_true")
-    return parser.parse_args(argv)
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument(
+        "--mode", choices=("proxy", "mesh"),
+        help="proxy: shared-adapter GATT client (default); mesh: native Mesh member and relay",
+    )
+    modes.add_argument(
+        "--backend", choices=("proxy", "bluez"),
+        help="compatibility spelling: proxy = --mode proxy; bluez = --mode mesh",
+    )
+    parser.add_argument(
+        "--adapter", type=adapter_selector, metavar="MAC|hciN",
+        help=("ordinary BlueZ adapter for GATT/discovery/enrollment; defaults to "
+              "BlueZ selection. In mesh mode this is the optional second radio, "
+              "not the controller owned by bluetooth-meshd. Prefer a stable MAC"),
+    )
+    parser.add_argument(
+        "--experimental-enrollment", action="store_true",
+        help="enable enrollment testing despite observed shared-adapter failures",
+    )
+    parser.add_argument(
+        "--enroll-seconds", type=int, default=0,
+        help="start nearby enrollment for 1..3600 seconds on startup",
+    )
+    args = parser.parse_args(argv)
+    args.mode = args.mode or ("mesh" if args.backend == "bluez" else "proxy")
+    args.backend = "bluez" if args.mode == "mesh" else "proxy"
+    if args.enroll_seconds and not 1 <= args.enroll_seconds <= 3600:
+        parser.error("--enroll-seconds must be 1..3600")
+    if args.enroll_seconds and args.mode == "mesh" and not args.experimental_enrollment:
+        parser.error("Mesh enrollment requires --experimental-enrollment")
+    return args
 
 
 def _active_unicast(state: dict) -> int:
@@ -882,54 +1116,92 @@ def _active_unicast(state: dict) -> int:
     return int(active, 16)
 
 
+async def open_proxy_network(transport, state: dict, store: StateStore):
+    """Use any owned proxy with one shared context and all current keys."""
+    members = [(int(key, 16), entry) for key, entry in state["devices"].items()
+               if not entry.get("superseded_by") and not entry.get("enrollment_pending")]
+    if not members:
+        raise BearerError("no configured Mesh member is available")
+    netkey = bytes.fromhex(state["netkey"])
+    scanner = transport.scanner()
+    session = None
+    try:
+        match, _ = await find_proxy_node(
+            scanner, k3(netkey), timeout=PROXY_SCAN_SECONDS,
+            stop_after=False, identity_netkey=netkey,
+            node_addresses=tuple(address for address, _ in members),
+        )
+        if match is None:
+            raise BearerError("no matching Mesh proxy found")
+        address, entry = members[0]
+        session = await open_mesh_proxy_session(
+            transport, match.device, netkey=netkey,
+            appkey=bytes.fromhex(state["appkey"]),
+            device_key=bytes.fromhex(entry["device_key"]),
+            iv_index=state["iv_index"], provisioner_addr=state["provisioner_addr"],
+            unicast=address, seq=state["seq"],
+            persist_seq=lambda value: store.advance_sequence(state, value),
+        )
+        for address, entry in members[1:]:
+            session.node.add_device(address, bytes.fromhex(entry["device_key"]))
+        return session
+    except BaseException:
+        if session is not None:
+            await session.close()
+        raise
+    finally:
+        await scanner.stop()
+
+
 async def run_service(args: argparse.Namespace) -> int:
     store = StateStore(args.state)
-    transport = LocalTransport()
+    adapter = getattr(args, "adapter", None)
+    transport = LocalTransport(adapter=adapter) if adapter else LocalTransport()
     server: UnixApiServer | None = None
     supervisor: ConnectionSupervisor | None = None
+    enrollment = None
     try:
         store.acquire()
         state = store.load_or_create()
-        unicast = _active_unicast(state)
-        entry = state["devices"][f"0x{unicast:04x}"]
-        netkey = bytes.fromhex(state["netkey"])
-        appkey = bytes.fromhex(state["appkey"])
-        device_key = bytes.fromhex(entry["device_key"])
+        # Legacy root metadata belongs only to the saved active device.
+        active = state.get("active_device")
+        if active in state["devices"]:
+            entry = state["devices"][active]
+            for field in ("composition", "control_model", "official_config_complete"):
+                if field in state and field not in entry:
+                    entry[field] = state[field]
+            store.save(state)
         await transport.start()
+        logger.info(
+            "Operation mode: %s; ordinary Bluetooth adapter: %s",
+            "mesh" if getattr(args, "backend", "proxy") == "bluez" else "proxy",
+            adapter or "BlueZ default",
+        )
 
         async def connect():
-            scanner = transport.scanner()
-            try:
-                match, _ = await find_proxy_node(
-                    scanner,
-                    k3(netkey),
-                    timeout=PROXY_SCAN_SECONDS,
-                    stop_after=False,
-                    identity_netkey=netkey,
-                    node_addresses=(unicast,),
-                )
-                if match is None:
-                    raise BearerError("no authenticated Sphere proxy advert seen")
-                return await open_mesh_proxy_session(
-                    transport,
-                    match.device,
-                    netkey=netkey,
-                    appkey=appkey,
-                    device_key=device_key,
-                    iv_index=state["iv_index"],
-                    provisioner_addr=state["provisioner_addr"],
-                    unicast=unicast,
-                    seq=state["seq"],
-                    persist_seq=lambda value: store.advance_sequence(state, value),
-                )
-            finally:
-                await scanner.stop()
+            if getattr(args, "backend", "proxy") == "bluez":
+                return await open_bluez_mesh_session(state, store)
+            return await open_proxy_network(transport, state, store)
 
         supervisor = ConnectionSupervisor(connect)
-        runtime = SphereRuntime(supervisor, state, store, unicast)
+        runtime = MeshRuntime(supervisor, state, store)
+        from .enrollment import EnrollmentManager
+        if (getattr(args, "backend", "proxy") == "proxy"
+                or getattr(args, "experimental_enrollment", False)):
+            enrollment = EnrollmentManager(
+                state, store, transport, runtime.exclusive, hold_radio=True,
+            )
+            runtime.enrollment = enrollment
         server = UnixApiServer(args.socket, runtime.handle)
         await server.start()
         supervisor.start()
+        enroll_seconds = getattr(args, "enroll_seconds", 0)
+        if enroll_seconds:
+            if not 1 <= enroll_seconds <= 3600:
+                raise StateError("--enroll-seconds must be 1..3600")
+            if enrollment is None:
+                raise StateError("--enroll-seconds requires --experimental-enrollment")
+            enrollment.start(enroll_seconds)
         logger.info("Sphere service listening on %s", args.socket)
 
         stopping = asyncio.Event()
@@ -945,6 +1217,8 @@ async def run_service(args: argparse.Namespace) -> int:
     finally:
         if server is not None:
             await server.close()
+        if enrollment is not None:
+            await enrollment.close()
         if supervisor is not None:
             await supervisor.stop()
         await transport.stop()

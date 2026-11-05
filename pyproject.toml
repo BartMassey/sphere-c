@@ -10,6 +10,7 @@ requires-python = ">=3.12"
 dependencies = [
     "btmesh[harness] @ git+https://github.com/dasimon135/ha-bluetooth-mesh.git@a8f7bbbebaeba124d7d08cb16122055074f2ef46",
     "cryptography>=42",
+    "dbus-fast>=5",
 ]
 
 [project.optional-dependencies]

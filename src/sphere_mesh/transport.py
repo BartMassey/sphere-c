@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from collections.abc import Callable
 from typing import Any
 
@@ -195,19 +196,94 @@ async def find_proxy_node(
             await scanner.stop()
 
 
+def adapter_selector(value: str) -> str:
+    """Validate an ordinary BlueZ adapter name or stable hardware address."""
+    if re.fullmatch(r"hci[0-9]+", value):
+        return value
+    if re.fullmatch(r"(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}", value):
+        return value.upper()
+    raise ValueError("adapter must be a Bluetooth MAC address or hciN")
+
+
+async def resolve_adapter(selector: str) -> str:
+    """Resolve only an adapter exposed by ordinary bluetoothd; never fall back."""
+    from dbus_fast import Message
+    from dbus_fast.aio import MessageBus
+    from dbus_fast.constants import BusType, MessageType
+
+    bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
+    try:
+        reply = await bus.call(Message(
+            destination="org.bluez", path="/",
+            interface="org.freedesktop.DBus.ObjectManager",
+            member="GetManagedObjects",
+        ))
+        if reply.message_type != MessageType.METHOD_RETURN:
+            raise RuntimeError("Could not list ordinary BlueZ adapters")
+        matches = []
+        for path, interfaces in reply.body[0].items():
+            props = interfaces.get("org.bluez.Adapter1")
+            if props is None:
+                continue
+            name = path.rsplit("/", 1)[-1]
+            if name == selector or props["Address"].value.upper() == selector:
+                matches.append(name)
+        if len(matches) != 1:
+            raise RuntimeError(
+                f"Ordinary Bluetooth adapter {selector} is unavailable; "
+                "a Mesh-owned controller cannot be used for GATT"
+            )
+        return matches[0]
+    finally:
+        bus.disconnect()
+
+
 class LocalTransport:
     """Use the Linux Bluetooth adapter through bleak."""
 
+    def __init__(self, adapter: str | None = None) -> None:
+        self._selector = adapter_selector(adapter) if adapter else None
+        self._adapter: str | None = None
+
     async def start(self) -> None:
-        pass
+        if self._selector:
+            self._adapter = await resolve_adapter(self._selector)
+
+    def _bluez_options(self) -> dict:
+        if self._selector and self._adapter is None:
+            raise RuntimeError("Selected Bluetooth transport has not been started")
+        return {"adapter": self._adapter} if self._adapter else {}
 
     def scanner(self):
         from bleak import BleakScanner
 
-        return BleakScanner()
+        options = self._bluez_options()
+        return BleakScanner(bluez=options) if options else BleakScanner()
 
     async def connect(self, address_or_device, timeout: float = 30.0):
-        client = await connect_local(address_or_device, timeout)
+        options = self._bluez_options()
+        if options:
+            from bleak import BleakClient
+            from bleak_retry_connector import establish_connection
+
+            try:
+                if isinstance(address_or_device, str):
+                    client = BleakClient(address_or_device, timeout=timeout, bluez=options)
+                    await client.connect()
+                else:
+                    # BLEDevice embeds its adapter's D-Bus path. Reject a
+                    # cached device from another radio rather than switching.
+                    path = address_or_device.details.get("path", "")
+                    if not path.startswith(f"/org/bluez/{self._adapter}/dev_"):
+                        raise BearerError("Scanned device belongs to another adapter")
+                    client = await establish_connection(
+                        BleakClient, address_or_device, address_or_device.address,
+                        bluez=options,
+                    )
+            except Exception as exc:
+                raise BearerError(f"Selected-adapter BLE connection failed: {exc}") from exc
+        else:
+            client = await connect_local(address_or_device, timeout)
         from bleak.backends.bluezdbus.client import BleakClientBlueZDBus
 
         backend = getattr(client, "_backend", None)

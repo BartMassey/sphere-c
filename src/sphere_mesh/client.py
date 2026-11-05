@@ -19,9 +19,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=Path("state/sphere.sock"),
         help="service socket (default: %(default)s)",
     )
+    parser.add_argument(
+        "--device",
+        help="target device address (for example 0x012a) or unique name",
+    )
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("health", help="show service and Bluetooth health")
     commands.add_parser("status", help="show health and saved capabilities")
+    commands.add_parser("devices", help="list enrolled Mesh devices")
+    rename = commands.add_parser("rename", help="rename a Mesh device")
+    rename.add_argument("device", help="device address or unique name")
+    rename.add_argument("name", help="new device name")
+    enroll = commands.add_parser("enroll", help="start device enrollment")
+    enroll.add_argument("--seconds", type=int, default=120, metavar="SECONDS")
+    enrollment = commands.add_parser("enrollment", help="inspect or stop enrollment")
+    enrollment.add_argument("operation", choices=("status", "stop"), nargs="?", default="status")
     basic = commands.add_parser("control", help="run a basic power command")
     basic.add_argument("operation", choices=("read", "on", "off", "toggle"))
     lighting = commands.add_parser("lighting", help="read or set lighting state")
@@ -67,6 +79,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 async def async_main(args: argparse.Namespace) -> int:
     if args.command in ("health", "status"):
         method, params = args.command, {}
+    elif args.command == "devices":
+        method, params = "device.list", {}
+    elif args.command == "rename":
+        method, params = "device.rename", {"device": args.device, "name": args.name}
+    elif args.command == "enroll":
+        method, params = "enrollment.start", {"duration": args.seconds}
+    elif args.command == "enrollment":
+        method, params = f"enrollment.{args.operation}", {}
     elif args.command == "control":
         method, params = "control", {"command": args.operation}
     elif args.command == "vendor-read":
@@ -83,6 +103,11 @@ async def async_main(args: argparse.Namespace) -> int:
         params = {"seconds": args.seconds} if args.operation == "set" else {}
     else:
         method, params = "lighting", {"command": args.operation}
+    if (
+        args.command in ("status", "control", "lighting", "vendor-read", "countdown")
+        or (args.command == "effect" and args.operation != "list")
+    ) and args.device is not None:
+        params["device"] = args.device
     try:
         response = await request(args.socket, method, params)
     except (OSError, ApiProtocolError) as exc:

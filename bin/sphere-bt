@@ -1,0 +1,213 @@
+#!/usr/bin/env python3
+"""Bluetooth lab operations behind one reviewable command prefix.
+
+Privileged commands are limited to Bluetooth tools and services.
+No shell or arbitrary program is accepted.
+"""
+
+import argparse
+import os
+import re
+import signal
+from pathlib import Path
+import subprocess
+import sys
+
+
+ROOT = Path(__file__).resolve().parent.parent
+SERVICES = ("bluetooth.service", "bluetooth-mesh.service")
+
+
+def controller_address(value):
+    if not re.fullmatch(r"[0-9a-fA-F]{2}(?::[0-9a-fA-F]{2}){5}", value):
+        raise argparse.ArgumentTypeError("controller must be a Bluetooth MAC address")
+    return value.upper()
+
+
+def adapter(value):
+    if re.fullmatch(r"hci[0-9]+", value):
+        return value
+    return controller_address(value)
+
+
+def run(*args, privileged=False, check=True):
+    command = (["sudo", "-n"] if privileged else []) + list(args)
+    return subprocess.run(command, cwd=ROOT, check=check)
+
+
+def reset():
+    """Reset the idle adapter and restore known Sphere connection timings."""
+    mesh_was_active = run("systemctl", "is-active", "--quiet", SERVICES[1], check=False).returncode == 0
+    run("systemctl", "stop", SERVICES[1], privileged=True)
+    run("btmgmt", "--index", "0", "power", "off", privileged=True)
+    run("btmgmt", "--index", "0", "power", "on", privileged=True)
+    for address in ("DC:23:52:09:A8:CF", "DC:23:52:12:11:1F"):
+        run(str(ROOT / ".venv/bin/python"), "scripts/set_le_conn_params.py",
+            address, privileged=True)
+    if mesh_was_active:
+        run("systemctl", "start", SERVICES[1], privileged=True)
+
+
+def main():
+    # The client and management tool own all options following their name.
+    # argparse's REMAINDER otherwise rejects a leading option like --device.
+    if len(sys.argv) > 1 and sys.argv[1] in ("ctl", "mgmt"):
+        if sys.argv[1] == "ctl":
+            run(str(ROOT / "bin/sphere-meshctl"), *sys.argv[2:])
+        else:
+            if len(sys.argv) == 2:
+                raise SystemExit("mgmt requires a Bluetooth management command")
+            run("btmgmt", *sys.argv[2:], privileged=True)
+        return
+    parser = argparse.ArgumentParser(description=__doc__)
+    commands = parser.add_subparsers(dest="command", required=True)
+    commands.add_parser("status")
+    commands.add_parser("reset")
+    daemon = commands.add_parser("daemon")
+    mode = daemon.add_mutually_exclusive_group()
+    mode.add_argument("--mode", choices=("proxy", "mesh"))
+    mode.add_argument("--backend", choices=("proxy", "bluez"))
+    daemon.add_argument("--adapter", type=adapter)
+    daemon.add_argument("--experimental-enrollment", action="store_true")
+    daemon.add_argument("--enroll-seconds", type=int)
+    daemon.add_argument("--state")
+    daemon.add_argument("--socket")
+    daemon.add_argument("--verbose", action="store_true")
+    commands.add_parser("daemon-stop")
+    commands.add_parser("cancel-hci-test")
+    commands.add_parser("archive-evidence")
+    mesh_only = commands.add_parser("mesh-only")
+    mesh_only.add_argument("action", choices=("start", "restore"))
+    mesh_only.add_argument("--controller", type=controller_address)
+    commands.add_parser("controllers")
+    proof = commands.add_parser("prove-mesh")
+    proof.add_argument("name")
+    proof.add_argument("--seconds", type=int, choices=range(1, 181), default=90)
+    proof.add_argument("--hold-seconds", type=int, choices=range(1, 11), default=4)
+    split = commands.add_parser("check-split")
+    split.add_argument("name")
+    split.add_argument("--seconds", type=int, choices=range(5, 121), default=30)
+    ctl = commands.add_parser("ctl")
+    ctl.add_argument("arguments", nargs=argparse.REMAINDER)
+    probe = commands.add_parser("probe")
+    probe.add_argument("kind", choices=("advertising", "proxy"))
+    probe.add_argument("name")
+    probe.add_argument("--pause-advertising", action="store_true")
+    probe.add_argument("--resume-before-read", action="store_true")
+    service = commands.add_parser("service")
+    service.add_argument("action", choices=("start", "stop", "restart", "status"))
+    service.add_argument("unit", choices=SERVICES)
+    mgmt = commands.add_parser("mgmt")
+    mgmt.add_argument("arguments", nargs=argparse.REMAINDER)
+    logs = commands.add_parser("logs")
+    logs.add_argument("--lines", type=int, default=40, choices=range(1, 501))
+    logs.add_argument("--mesh-only", action="store_true")
+    logs.add_argument("--since")
+    logs.add_argument("--until")
+    capture = commands.add_parser("capture")
+    capture.add_argument("name")
+    capture.add_argument("--seconds", type=int, default=30, choices=range(1, 301))
+    args = parser.parse_args()
+    if args.command == "status":
+        run("systemctl", "is-active", *SERVICES, check=False)
+        run("btmgmt", "info", privileged=True)
+        for line in Path("/etc/bluetooth/main.conf").read_text().splitlines():
+            if line.startswith(("Privacy =", "Experimental =")):
+                print(line, flush=True)
+    elif args.command == "reset":
+        reset()
+    elif args.command == "daemon":
+        extra = (["--backend", args.backend] if args.backend else
+                 ["--mode", args.mode or "proxy"])
+        for option in ("adapter", "enroll_seconds", "state", "socket"):
+            value = getattr(args, option)
+            if value is not None:
+                extra.extend(("--" + option.replace("_", "-"), str(value)))
+        for option in ("experimental_enrollment", "verbose"):
+            if getattr(args, option):
+                extra.append("--" + option.replace("_", "-"))
+        run(str(ROOT / "bin/sphere-meshd"), *extra)
+    elif args.command == "daemon-stop":
+        pattern = "^" + re.escape(str(ROOT / ".venv/bin/python")) + r" -m sphere_mesh\.daemon( |$)"
+        found = subprocess.run(["pgrep", "-f", pattern], capture_output=True, text=True)
+        if found.returncode not in (0, 1):
+            raise SystemExit("Could not identify the project daemon")
+        for value in found.stdout.splitlines():
+            os.kill(int(value), signal.SIGTERM)
+    elif args.command == "cancel-hci-test":
+        run("pkill", "-TERM", "-f", "^btmgmt --index 0 hci-cmd( |$)",
+            privileged=True, check=False)
+    elif args.command == "archive-evidence":
+        run("python3", str(ROOT / "scripts/archive_bluez_issue.py"), privileged=True)
+    elif args.command == "mesh-only":
+        if args.action == "restore" and args.controller is not None:
+            parser.error("--controller is only valid with start")
+        extra = ["--controller", args.controller] if args.controller else []
+        run("python3", str(ROOT / "scripts/mesh_only_controller.py"), args.action,
+            *extra, privileged=True)
+    elif args.command == "controllers":
+        run("btmgmt", "info", privileged=True)
+        run("bluetoothctl", "list")
+    elif args.command == "prove-mesh":
+        if not args.name or Path(args.name).name != args.name or args.name.startswith("."):
+            parser.error("proof name must be a simple nonhidden filename")
+        run(str(ROOT / ".venv/bin/python"), str(ROOT / "scripts/prove_bluez_mesh_control.py"),
+            "--output", str(ROOT / "state/captures" / (args.name + ".json")),
+            "--seconds", str(args.seconds), "--hold-seconds", str(args.hold_seconds))
+    elif args.command == "check-split":
+        if not args.name or Path(args.name).name != args.name or args.name.startswith("."):
+            parser.error("split check name must be a simple nonhidden filename")
+        run(str(ROOT / ".venv/bin/python"), str(ROOT / "scripts/check_split_bluetooth.py"),
+            "--output", str(ROOT / "state/captures" / (args.name + ".json")),
+            "--seconds", str(args.seconds))
+    elif args.command == "ctl":
+        run(str(ROOT / "bin/sphere-meshctl"), *args.arguments)
+    elif args.command == "probe":
+        if not args.name or Path(args.name).name != args.name or args.name.startswith("."):
+            parser.error("probe name must be a simple nonhidden filename")
+        script = "check_bluez_mesh.py" if args.kind == "advertising" else "check_mesh_members.py"
+        extra = []
+        if args.kind == "proxy":
+            if args.pause_advertising:
+                extra.append("--pause-advertising")
+            if args.resume_before_read:
+                extra.append("--resume-before-read")
+        run(str(ROOT / ".venv/bin/python"), str(ROOT / "scripts" / script),
+            "--output", str(ROOT / "state/captures" / (args.name + ".json")), *extra)
+    elif args.command == "service":
+        run("systemctl", args.action, args.unit, privileged=True)
+    elif args.command == "mgmt":
+        if not args.arguments:
+            parser.error("mgmt requires a Bluetooth management command")
+        run("btmgmt", *args.arguments, privileged=True)
+    elif args.command == "logs":
+        command = ["journalctl", "-u", SERVICES[1]]
+        if not args.mesh_only:
+            command.extend(["-u", SERVICES[0]])
+        if args.since:
+            command.extend(["--since", args.since])
+        if args.until:
+            command.extend(["--until", args.until])
+        run(*command, "-n", str(args.lines), "--no-pager", privileged=True)
+    else:
+        if not args.name or Path(args.name).name != args.name or args.name.startswith("."):
+            parser.error("capture name must be a simple nonhidden filename")
+        directory = ROOT / "state/captures"
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / (args.name + ".btsnoop")
+        log = directory / (args.name + ".btmon.txt")
+        path.touch(mode=0o600, exist_ok=False)
+        with open(log, "x", opener=lambda p, flags: os.open(p, flags, 0o600)) as stream:
+            subprocess.run(
+                ["sudo", "-n", "timeout", "--signal=INT", str(args.seconds),
+                 "btmon", "--write", str(path)], stdout=stream, stderr=stream,
+                check=False,
+            )
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (subprocess.CalledProcessError, OSError) as exc:
+        print(str(exc), file=sys.stderr)
+        raise SystemExit(1)

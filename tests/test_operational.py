@@ -65,16 +65,12 @@ async def test_service_owns_state_reconnects_and_serializes_requests(
         def scanner(self):
             return SimpleNamespace(stop=AsyncMock())
 
-    async def find_proxy(*_args, **_kwargs):
-        return SimpleNamespace(device=object()), None
-
     async def open_proxy(*_args, **_kwargs):
         return next(connections)
 
     original_supervisor = daemon.ConnectionSupervisor
     monkeypatch.setattr(daemon, "LocalTransport", Transport)
-    monkeypatch.setattr(daemon, "find_proxy_node", find_proxy)
-    monkeypatch.setattr(daemon, "open_mesh_proxy_session", open_proxy)
+    monkeypatch.setattr(daemon, "open_bluez_mesh_session", open_proxy)
     monkeypatch.setattr(
         daemon,
         "ConnectionSupervisor",
@@ -92,7 +88,7 @@ async def test_service_owns_state_reconnects_and_serializes_requests(
 
     service = asyncio.create_task(
         daemon.run_service(
-            SimpleNamespace(state=state_path, socket=socket_path)
+            SimpleNamespace(state=state_path, socket=socket_path, backend="bluez")
         )
     )
     try:

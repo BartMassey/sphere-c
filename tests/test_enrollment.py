@@ -1,0 +1,487 @@
+"""Enrollment selection, durable recovery, and batch lifecycle checks."""
+
+import asyncio
+from contextlib import asynccontextmanager
+import json
+from types import SimpleNamespace
+
+import pytest
+
+from sphere_mesh import enrollment as module
+from sphere_mesh import provision as provisioning
+from sphere_mesh.state import StateStore
+
+
+def beacon(uuid="dc235212111f50146430647067613068"):
+    return SimpleNamespace(uuid=bytes.fromhex(uuid), device=SimpleNamespace(address="DC:23:52:12:11:1F"))
+
+
+@asynccontextmanager
+async def exclusive():
+    yield
+
+
+@pytest.fixture
+def manager(tmp_path):
+    with StateStore(tmp_path / "state.json") as store:
+        state = store.load_or_create()
+        yield module.EnrollmentManager(state, store, SimpleNamespace(), exclusive)
+
+
+@pytest.mark.parametrize("uuid, accepted", [
+    ("dc235209a8cf10146430647067613068", True),
+    ("dc235212111f50146430647067613068", True),
+    ("dc235212111f50140000000000000000", False),
+    ("1234", False),
+])
+def test_product_uuid(uuid, accepted):
+    assert module.sphere_uuid(bytes.fromhex(uuid)) is accepted
+
+
+@pytest.mark.parametrize("raw, provisioning_service, accepted", [
+    (module.REVISION_05, True, True),
+    (bytes.fromhex("00003032303214100002"), True, False),
+    (module.REVISION_05, False, False),
+])
+async def test_read_only_live_compatibility(raw, provisioning_service, accepted):
+    char = SimpleNamespace(uuid=module.REVISION, properties=["read"])
+    services = [SimpleNamespace(uuid=module.DEVICE_INFORMATION, characteristics=[char])]
+    if provisioning_service:
+        services.append(SimpleNamespace(uuid=module.PROVISIONING, characteristics=[]))
+
+    class Client:
+        disconnected = False
+
+        async def read_gatt_char(self, characteristic):
+            assert characteristic is char
+            return raw
+
+        async def disconnect(self):
+            self.disconnected = True
+
+    client = Client()
+    client.services = services
+
+    async def connect(*args, **kwargs):
+        return client
+
+    details = await module.inspect_candidate(SimpleNamespace(connect=connect), beacon())
+    assert (details is not None) is accepted
+    assert client.disconnected
+
+
+def test_checkpoint_reserves_full_span_and_retains_keys(manager):
+    prov = SimpleNamespace(capabilities=SimpleNamespace(num_elements=6), device_key=b"k" * 16)
+    manager._checkpoint(0x100, prov, beacon())
+    saved = json.loads(manager.store.path.read_text())
+    assert saved["next_unicast"] == 0x106
+    assert saved["devices"]["0x0100"]["device_key"] == (b"k" * 16).hex()
+    assert saved["devices"]["0x0100"]["enrollment_pending"]
+    assert not saved["devices"]["0x0100"]["provisioning_complete"]
+    with pytest.raises(ValueError, match="overlaps"):
+        manager._checkpoint(0x103, prov, beacon())
+    with pytest.raises(ValueError, match="exceeds"):
+        manager._checkpoint(0x7fff, prov, beacon())
+
+
+async def test_stop_finishes_inflight_batch_and_status_has_no_keys(manager, monkeypatch):
+    started, finish = asyncio.Event(), asyncio.Event()
+
+    class Scanner:
+        async def stop(self):
+            pass
+
+    manager.transport.scanner = Scanner
+
+    async def scan(*args, **kwargs):
+        return [beacon()]
+
+    async def inspect(*args):
+        return {"firmware_version": "0.5"}
+
+    async def commission(*args):
+        started.set()
+        await finish.wait()
+        manager._results.append({"device": "0x0100", "name": "BEN"})
+
+    monkeypatch.setattr(module, "scan_unprovisioned", scan)
+    monkeypatch.setattr(module, "inspect_candidate", inspect)
+    monkeypatch.setattr(manager, "_commission", commission)
+    manager.start(30)
+    await started.wait()
+    stopping = asyncio.create_task(manager.stop())
+    await asyncio.sleep(0)
+    assert not stopping.done()
+    finish.set()
+    result = await stopping
+    assert not result["active"]
+    assert result["devices"] == [{"device": "0x0100", "name": "BEN"}]
+    assert "device_key" not in json.dumps(result)
+
+
+async def test_configuration_failure_keeps_recovery_record(manager, monkeypatch):
+    manager.state["composition"] = {"old": True}
+    manager.state["active_device"] = "0x0090"
+    manager.state["devices"]["0x0090"] = {"device_key": "ab" * 16, "name": "ARI"}
+
+    async def provision(args, state, path, transport, *, target, checkpoint, activate):
+        prov = SimpleNamespace(capabilities=SimpleNamespace(num_elements=6), device_key=b"k" * 16)
+        checkpoint(0x100, prov, target)
+        state["devices"]["0x0100"]["provisioning_complete"] = True
+        return 0x100
+
+    async def configure(address):
+        raise TimeoutError("secret exception detail")
+
+    monkeypatch.setattr(module, "provision", provision)
+    monkeypatch.setattr(manager, "_configure", configure)
+    with pytest.raises(TimeoutError):
+        await manager._commission(beacon(), {"firmware_version": "0.5"})
+    saved = json.loads(manager.store.path.read_text())
+    assert saved["devices"]["0x0100"]["enrollment_pending"]
+    assert saved["devices"]["0x0100"]["firmware_version"] == "0.5"
+    assert saved["active_device"] == "0x0090"
+    assert saved["composition"] == {"old": True}
+
+
+@pytest.mark.parametrize("complete", [True, False])
+async def test_provisioning_checkpoint_precedes_data_transmission(manager, monkeypatch, complete):
+    sent = []
+
+    class Pump:
+        def __init__(self, *args):
+            pass
+
+        def put(self, payload):
+            saved = json.loads(manager.store.path.read_text())
+            assert saved["devices"]["0x0100"]["device_key"] == (b"k" * 16).hex()
+            assert saved["next_unicast"] == 0x106
+            sent.append(payload)
+
+        def start(self):
+            pass
+
+        async def stop(self):
+            pass
+
+    class Provisioner:
+        done = complete
+        state = SimpleNamespace(name="WAIT_COMPLETE")
+        device_key = b"k" * 16
+        capabilities = SimpleNamespace(num_elements=6)
+
+        def __init__(self, *args, send, **kwargs):
+            self.send = send
+
+        def start(self):
+            self.send(b"\x07encrypted")
+            if complete:
+                self.on_done()
+
+    class Connection:
+        async def stop(self):
+            pass
+
+        async def disconnect(self):
+            pass
+
+    async def open_session(*args, **kwargs):
+        return Connection(), Connection()
+
+    monkeypatch.setattr(provisioning, "BearerPump", Pump)
+    monkeypatch.setattr(provisioning, "Provisioner", Provisioner)
+    monkeypatch.setattr(provisioning, "open_gatt_session", open_session)
+    monkeypatch.setattr(provisioning, "PROVISIONING_TIMEOUT_S", 0.001)
+    operation = provisioning.provision(
+        SimpleNamespace(static_oob=None), manager.state, manager.store.path,
+        manager.transport, target=beacon(), checkpoint=manager._checkpoint, activate=False,
+    )
+    if complete:
+        await operation
+    else:
+        with pytest.raises(provisioning.Phase0Failure):
+            await operation
+    assert sent == [b"\x07encrypted"]
+    saved = json.loads(manager.store.path.read_text())
+    assert saved["devices"]["0x0100"]["provisioning_complete"] is complete
+    assert saved["devices"]["0x0100"]["device_key"] == (b"k" * 16).hex()
+    assert saved["next_unicast"] == 0x106
+
+
+async def test_configure_does_not_save_new_metadata_as_old_device(manager, monkeypatch):
+    manager.state["active_device"] = "0x0090"
+    manager.state["devices"]["0x0090"] = {"name": "ARI"}
+    manager.state["composition"] = {"old": True}
+    manager._checkpoint(0x100, SimpleNamespace(capabilities=SimpleNamespace(num_elements=6),
+                                            device_key=b"k" * 16), beacon())
+
+    class Scanner:
+        async def stop(self):
+            pass
+
+    manager.transport.scanner = Scanner
+
+    async def proxy(*args, **kwargs):
+        return SimpleNamespace(device=object()), []
+
+    class Session:
+        node, pump = object(), object()
+
+        async def close(self):
+            pass
+
+    async def open_session(*args, **kwargs):
+        return Session()
+
+    async def configure(node, address, key, working, pump):
+        working["composition"] = {"new": True}
+        manager.store.advance_sequence(manager.state, 3)
+        assert json.loads(manager.store.path.read_text())["composition"] == {"old": True}
+        working["official_config_complete"] = True
+
+    monkeypatch.setattr(module, "find_proxy_node", proxy)
+    monkeypatch.setattr(module, "open_mesh_proxy_session", open_session)
+    monkeypatch.setattr(module, "configure", configure)
+    await manager._configure(0x100)
+    assert manager.state["composition"] == {"old": True}
+    assert manager.state["devices"]["0x0100"]["composition"] == {"new": True}
+    assert not manager.state["devices"]["0x0100"]["enrollment_pending"]
+
+
+@pytest.mark.parametrize("configuration_fails", [False, True])
+async def test_configure_closes_radio_when_persistence_fails(manager, monkeypatch, configuration_fails):
+    manager._checkpoint(0x100, SimpleNamespace(capabilities=SimpleNamespace(num_elements=6),
+                                            device_key=b"k" * 16), beacon())
+    cleanup = []
+
+    class Scanner:
+        async def stop(self):
+            cleanup.append("scanner")
+
+    class Session:
+        node, pump = object(), object()
+
+        async def close(self):
+            cleanup.append("session")
+
+    manager.transport.scanner = Scanner
+
+    async def proxy(*args, **kwargs):
+        return SimpleNamespace(device=object()), []
+
+    async def open_session(*args, **kwargs):
+        return Session()
+
+    async def configure(*args):
+        if configuration_fails:
+            raise TimeoutError("configuration failure")
+
+    def save(*args):
+        raise OSError("disk failure")
+
+    monkeypatch.setattr(module, "find_proxy_node", proxy)
+    monkeypatch.setattr(module, "open_mesh_proxy_session", open_session)
+    monkeypatch.setattr(module, "configure", configure)
+    monkeypatch.setattr(manager.store, "save", save)
+    expected = TimeoutError if configuration_fails else OSError
+    with pytest.raises(expected):
+        await manager._configure(0x100)
+    assert cleanup == ["session", "scanner"]
+
+
+async def test_ambiguous_data_transfer_recovers_saved_key_before_new_provision(manager, monkeypatch):
+    manager._checkpoint(0x100, SimpleNamespace(capabilities=SimpleNamespace(num_elements=6),
+                                            device_key=b"k" * 16), beacon())
+    attempted = []
+
+    async def recover(address):
+        attempted.append(address)
+        entry = manager.state["devices"]["0x0100"]
+        assert entry["device_key"] == (b"k" * 16).hex()
+        assert not entry["provisioning_complete"]
+        entry["provisioning_complete"] = True
+        entry["enrollment_pending"] = False
+        manager.store.save(manager.state)
+        manager._stop.set()
+
+    monkeypatch.setattr(manager, "_configure", recover)
+    manager.start(30)
+    await manager._task
+    assert attempted == [0x100]
+    assert manager.state["next_unicast"] == 0x106
+
+
+async def test_reenrolling_selected_identity_moves_active_after_complete(manager, monkeypatch):
+    target = beacon()
+    manager.state["active_device"] = "0x0090"
+    manager.state["devices"]["0x0090"] = {
+        "name": "BEN", "uuid": target.uuid.hex(), "address": target.device.address,
+    }
+    manager.state["composition"] = {"old": True}
+
+    async def provision(args, state, path, transport, *, target, checkpoint, activate):
+        checkpoint(0x100, SimpleNamespace(capabilities=SimpleNamespace(num_elements=6),
+                                        device_key=b"k" * 16), target)
+        assert state["active_device"] == "0x0090"
+        assert "superseded_by" not in state["devices"]["0x0090"]
+        state["devices"]["0x0100"]["provisioning_complete"] = True
+        return 0x100
+
+    async def configure(address):
+        assert manager.state["active_device"] == "0x0100"
+        assert "composition" not in manager.state
+        assert manager.state["devices"]["0x0090"]["superseded_by"] == "0x0100"
+        assert manager.state["devices"]["0x0100"]["name"] == "BEN"
+
+    monkeypatch.setattr(module, "provision", provision)
+    monkeypatch.setattr(manager, "_configure", configure)
+    await manager._commission(target, {"firmware_version": "0.5"})
+
+
+def test_checkpoint_rejects_span_crossing_bluez_host_reservation(manager):
+    manager.state["bluez_mesh"] = {"unicast": 0x103, "element_count": 1}
+    prov = SimpleNamespace(capabilities=SimpleNamespace(num_elements=6), device_key=b"k" * 16)
+    with pytest.raises(ValueError, match="BlueZ Mesh host"):
+        manager._checkpoint(0x100, prov, beacon())
+    assert not manager.state["devices"]
+    assert manager.state["next_unicast"] == 0x100
+
+
+@pytest.mark.parametrize("expire_during", ["inspection", "first_commission"])
+async def test_window_expiry_inside_batch_prevents_new_commission(manager, monkeypatch, expire_during):
+    now = [0]
+    manager._now = lambda: now[0]
+    manager._deadline = 10
+    commissioned = []
+
+    class Scanner:
+        async def stop(self):
+            pass
+
+    manager.transport.scanner = Scanner
+
+    async def scan(*args, **kwargs):
+        return [beacon(), beacon("dc235209a8cf10146430647067613068")]
+
+    async def inspect(*args):
+        if expire_during == "inspection":
+            now[0] = 11
+        return {"firmware_version": "0.5"}
+
+    async def commission(target, *args):
+        commissioned.append(target.uuid)
+        now[0] = 11
+
+    monkeypatch.setattr(module, "scan_unprovisioned", scan)
+    monkeypatch.setattr(module, "inspect_candidate", inspect)
+    monkeypatch.setattr(manager, "_commission", commission)
+    await manager._run()
+    assert len(commissioned) == (0 if expire_during == "inspection" else 1)
+
+
+async def test_window_expiry_during_pending_configuration_stops_next_attempt(manager, monkeypatch):
+    now = [0]
+    manager._now = lambda: now[0]
+    manager._deadline = 10
+    manager.state["devices"] = {
+        "0x0100": {"enrollment_pending": True},
+        "0x0106": {"enrollment_pending": True},
+    }
+    configured = []
+
+    async def configure(address):
+        configured.append(address)
+        now[0] = 11
+
+    monkeypatch.setattr(manager, "_configure", configure)
+    await manager._run()
+    assert configured == [0x100]
+
+
+async def test_pending_uuid_is_not_reprovisioned_and_recovery_backs_off(manager, monkeypatch):
+    target = beacon()
+    manager._checkpoint(0x100, SimpleNamespace(capabilities=SimpleNamespace(num_elements=6),
+                                            device_key=b"k" * 16), target)
+    now, scans, configured = [0], [], []
+    manager._now = lambda: now[0]
+    manager._deadline = 30
+
+    class Scanner:
+        async def stop(self):
+            pass
+
+    class Stop(asyncio.Event):
+        async def wait(self):
+            now[0] += 2
+
+    manager._stop = Stop()
+    manager.transport.scanner = Scanner
+
+    async def scan(*args, **kwargs):
+        scans.append(True)
+        now[0] += 1
+        if len(scans) == 3:
+            manager._stop.set()
+        return [target]
+
+    async def configure(address):
+        configured.append(address)
+        raise TimeoutError()
+
+    async def forbidden(*args, **kwargs):
+        pytest.fail("a pending identity must not be inspected or provisioned again")
+
+    monkeypatch.setattr(module, "scan_unprovisioned", scan)
+    monkeypatch.setattr(module, "inspect_candidate", forbidden)
+    monkeypatch.setattr(manager, "_commission", forbidden)
+    monkeypatch.setattr(manager, "_configure", configure)
+    await manager._run()
+    assert len(scans) == 3
+    assert configured == [0x100]
+    assert manager.state["next_unicast"] == 0x106
+    assert len(manager.state["devices"]) == 1
+
+
+async def test_whole_window_radio_lease_survives_multiple_scans_and_restores_on_stop(manager, monkeypatch):
+    events, scans = [], []
+
+    @asynccontextmanager
+    async def radio_lease():
+        events.append("paused")
+        try:
+            yield
+        finally:
+            events.append("restored")
+
+    class Scanner:
+        async def stop(self):
+            pass
+
+    class Stop(asyncio.Event):
+        async def wait(self):
+            pass
+
+    manager = module.EnrollmentManager(manager.state, manager.store,
+                                       SimpleNamespace(scanner=Scanner), radio_lease,
+                                       hold_radio=True)
+    manager._stop = Stop()
+
+    async def scan(*args, **kwargs):
+        assert events == ["paused"]
+        scans.append(True)
+        if len(scans) == 3:
+            manager._stop.set()
+        return []
+
+    monkeypatch.setattr(module, "scan_unprovisioned", scan)
+    manager.start(30)
+    await manager._task
+    assert len(scans) == 3
+    assert events == ["paused", "restored"]
+    assert not manager.status()["active"]
+
+
+@pytest.mark.parametrize("duration", [0, -1, True, float("nan"), float("inf"), 3601, "10"])
+async def test_invalid_window(manager, duration):
+    with pytest.raises(ValueError):
+        manager.start(duration)

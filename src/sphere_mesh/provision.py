@@ -245,6 +245,7 @@ def setup_logging(verbose: bool) -> None:
     log_path = Path(LOG_FILE)
     log_path.parent.mkdir(parents=True, exist_ok=True)
     logfile = logging.FileHandler(log_path, mode="a", encoding="utf-8")
+    os.chmod(log_path, 0o600)
     logfile.setLevel(logging.DEBUG)
     logfile.setFormatter(
         logging.Formatter("%(asctime)s %(levelname).1s %(name)s: %(message)s")
@@ -317,55 +318,67 @@ def _provisioning_causes(message: str) -> list[str]:
     return causes
 
 
-async def provision(args, state: dict, state_path: Path, transport) -> int:
-    """Scan, connect PB-GATT, drive the provisioning handshake. Milestone A."""
+async def provision(
+    args, state: dict, state_path: Path, transport, *,
+    target=None, checkpoint=None, activate=True
+) -> int:
+    """Scan, connect PB-GATT, and drive the provisioning handshake.
+
+    An already discovered ``target`` lets the daemon retain its scanner
+    through handoff. ``checkpoint`` runs synchronously before Provisioning
+    Data is queued, with the address, provisioner, and target; failure stops
+    the send. The caller can persist recovery keys before remote ownership
+    changes. ``activate=False`` preserves an existing selected device.
+    """
     netkey = bytes.fromhex(state["netkey"])
-    scanner = transport.scanner()
-    print(f"Scanning {SCAN_UNPROVISIONED_S:.0f} s for unprovisioned devices (0x1827)...")
-    # Connect as soon as the (matching) beacon shows up: Telink lamps only
-    # accept connections in a short window after power-up.
-    beacons = await scan_unprovisioned(
-        scanner,
-        timeout=SCAN_UNPROVISIONED_S,
-        stop_on=bytes.fromhex(args.device_uuid) if args.device_uuid else None,
-        stop_on_any=not args.device_uuid,
-        stop_after=False,
-    )
-    for b in beacons:
-        print(
-            f"  0x1827 beacon {b.device.address}: "
-            f"Device UUID {b.uuid.hex()}, OOB info 0x{b.oob_info:04x}"
+    scanner = None
+    if target is None:
+        scanner = transport.scanner()
+        print(f"Scanning {SCAN_UNPROVISIONED_S:.0f} s for unprovisioned devices (0x1827)...")
+        # Connect as soon as the (matching) beacon shows up: Telink lamps only
+        # accept connections in a short window after power-up.
+        beacons = await scan_unprovisioned(
+            scanner,
+            timeout=SCAN_UNPROVISIONED_S,
+            stop_on=bytes.fromhex(args.device_uuid) if args.device_uuid else None,
+            stop_on_any=not args.device_uuid,
+            stop_after=False,
         )
-    if not beacons:
-        await scanner.stop()
-        raise Phase0Failure(
-            "provisioning scan",
-            "no 0x1827 unprovisioned-device beacon seen",
-            [
-                "device is already provisioned — factory-reset it to restore "
-                "the beacon (vendor app or power-cycle sequence)",
-                "device supports only PB-ADV, not PB-GATT (out of Phase 0 scope)",
-                "device unpowered or out of radio range of the proxy/adapter",
-            ],
-        )
-    if args.device_uuid:
-        want = bytes.fromhex(args.device_uuid)
-        matching = [b for b in beacons if b.uuid == want]
-        if not matching:
+        for b in beacons:
+            print(
+                f"  0x1827 beacon {b.device.address}: "
+                f"Device UUID {b.uuid.hex()}, OOB info 0x{b.oob_info:04x}"
+            )
+        if not beacons:
             await scanner.stop()
             raise Phase0Failure(
                 "provisioning scan",
-                f"no beacon with Device UUID {args.device_uuid}",
-                ["check the UUID against the beacon list above"],
+                "no 0x1827 unprovisioned-device beacon seen",
+                [
+                    "device is already provisioned — factory-reset it to restore "
+                    "the beacon (vendor app or power-cycle sequence)",
+                    "device supports only PB-ADV, not PB-GATT (out of Phase 0 scope)",
+                    "device unpowered or out of radio range of the proxy/adapter",
+                ],
             )
-        target = matching[0]
-    else:
-        target = beacons[0]
-        if len(beacons) > 1:
-            print(
-                f"  multiple beacons; picking {target.uuid.hex()} "
-                "(use --device-uuid to override)"
-            )
+        if args.device_uuid:
+            want = bytes.fromhex(args.device_uuid)
+            matching = [b for b in beacons if b.uuid == want]
+            if not matching:
+                await scanner.stop()
+                raise Phase0Failure(
+                    "provisioning scan",
+                    f"no beacon with Device UUID {args.device_uuid}",
+                    ["check the UUID against the beacon list above"],
+                )
+            target = matching[0]
+        else:
+            target = beacons[0]
+            if len(beacons) > 1:
+                print(
+                    f"  multiple beacons; picking {target.uuid.hex()} "
+                    "(use --device-uuid to override)"
+                )
 
     print(f"Connecting PB-GATT to {target.device.address}...")
     # The real handler is installed once the session objects exist below; the
@@ -383,17 +396,26 @@ async def provision(args, state: dict, state_path: Path, transport) -> int:
             transport, target.device, provisioning=True, on_message=dispatch
         )
     finally:
-        await scanner.stop()
+        if scanner is not None:
+            await scanner.stop()
     pump = BearerPump(bearer, MSG_TYPE_PROVISIONING_PDU)
 
     unicast = state["next_unicast"]
     static_oob = bytes.fromhex(args.static_oob) if args.static_oob else None
+
+    def send_provisioning(payload: bytes) -> None:
+        # Data (0x07) commits network ownership remotely. Save recovery keys
+        # and reserve its entire element span before it can leave this host.
+        if payload[0] == 0x07 and checkpoint is not None:
+            checkpoint(unicast, prov, target)
+        pump.put(payload)
+
     prov = Provisioner(
         netkey,
         state["netkey_index"],
         state["iv_index"],
         unicast,
-        send=pump.put,
+        send=send_provisioning,
         static_oob=static_oob,
     )
 
@@ -456,14 +478,17 @@ async def provision(args, state: dict, state_path: Path, transport) -> int:
     print()
     print("=== MILESTONE A: PROVISIONING COMPLETE ===")
     print(f"  unicast address: 0x{unicast:04x}")
-    print(f"  device key:      {prov.device_key.hex()}")
+    print("  device key:      saved privately in the state file")
     print()
-    state["devices"][f"0x{unicast:04x}"] = {
+    state["devices"].setdefault(f"0x{unicast:04x}", {}).update({
         "device_key": prov.device_key.hex(),
         "uuid": target.uuid.hex(),
         "address": target.device.address,
-    }
-    state["active_device"] = f"0x{unicast:04x}"
+        "element_count": prov.capabilities.num_elements,
+        "provisioning_complete": True,
+    })
+    if activate or state.get("active_device") is None:
+        state["active_device"] = f"0x{unicast:04x}"
     # Advance past every element of the node so a future device in this state
     # file cannot overlap the lamp's secondary elements.
     state["next_unicast"] = unicast + max(1, prov.capabilities.num_elements)

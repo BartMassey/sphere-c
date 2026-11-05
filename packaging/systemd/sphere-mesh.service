@@ -10,7 +10,8 @@ RuntimeDirectory=sphere-mesh
 RuntimeDirectoryMode=0700
 StateDirectory=sphere-mesh
 StateDirectoryMode=0700
-ExecStart=/usr/bin/env sphere-meshd --state %S/sphere-mesh/state.json --socket %t/sphere-mesh/control.sock
+# Mesh mode requires a separate system bluetooth-meshd controller setup.
+ExecStart=/usr/bin/env sphere-meshd --mode proxy --state %S/sphere-mesh/state.json --socket %t/sphere-mesh/control.sock
 Restart=on-failure
 RestartSec=3
 NoNewPrivileges=true

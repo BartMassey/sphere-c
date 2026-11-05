@@ -32,6 +32,59 @@ class FakeTransport:
         return outcome
 
 
+async def test_selected_adapter_routes_scanning_and_connections(monkeypatch):
+    import bleak
+    import bleak_retry_connector
+
+    resolve = AsyncMock(return_value="hci7")
+    monkeypatch.setattr(sphere_transport, "resolve_adapter", resolve)
+    scanner = Mock()
+    monkeypatch.setattr(bleak, "BleakScanner", scanner)
+    client = SimpleNamespace(connect=AsyncMock())
+    factory = Mock(return_value=client)
+    monkeypatch.setattr(bleak, "BleakClient", factory)
+    retry = AsyncMock(return_value=client)
+    monkeypatch.setattr(bleak_retry_connector, "establish_connection", retry)
+    transport = sphere_transport.LocalTransport(adapter="aa:bb:cc:dd:ee:ff")
+    with pytest.raises(RuntimeError, match="not been started"):
+        transport.scanner()
+    await transport.start()
+    resolve.assert_awaited_once_with("AA:BB:CC:DD:EE:FF")
+    transport.scanner()
+    scanner.assert_called_once_with(bluez={"adapter": "hci7"})
+    assert await transport.connect("11:22:33:44:55:66", 12) is client
+    factory.assert_called_once_with("11:22:33:44:55:66", timeout=12,
+                                    bluez={"adapter": "hci7"})
+    device = SimpleNamespace(address="11:22:33:44:55:66",
+                             details={"path": "/org/bluez/hci7/dev_11_22_33_44_55_66"})
+    assert await transport.connect(device) is client
+    retry.assert_awaited_once_with(factory, device, device.address,
+                                  bluez={"adapter": "hci7"})
+    device.details["path"] = "/org/bluez/hci0/dev_11_22_33_44_55_66"
+    with pytest.raises(BearerError, match="another adapter"):
+        await transport.connect(device)
+    assert retry.await_count == 1
+
+
+async def test_adapter_resolution_uses_address_and_rejects_unavailable_radio(monkeypatch):
+    from dbus_fast import Variant
+    from dbus_fast.aio import MessageBus
+    from dbus_fast.constants import MessageType
+
+    bus = SimpleNamespace(call=AsyncMock(return_value=SimpleNamespace(
+        message_type=MessageType.METHOD_RETURN,
+        body=[{"/org/bluez/hci7": {"org.bluez.Adapter1": {
+            "Address": Variant("s", "AA:BB:CC:DD:EE:FF"),
+        }}}],
+    )), disconnect=Mock())
+    monkeypatch.setattr(MessageBus, "connect", AsyncMock(return_value=bus))
+    assert await sphere_transport.resolve_adapter("AA:BB:CC:DD:EE:FF") == "hci7"
+    assert await sphere_transport.resolve_adapter("hci7") == "hci7"
+    with pytest.raises(RuntimeError, match="unavailable"):
+        await sphere_transport.resolve_adapter("hci0")
+    assert bus.disconnect.call_count == 3
+
+
 async def test_local_transport_acquires_bluez_mtu_before_reading_it(monkeypatch):
     from bleak.backends.bluezdbus import client as bluez_client
 

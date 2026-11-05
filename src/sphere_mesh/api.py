@@ -79,6 +79,7 @@ class UnixApiServer:
         self._handler = handler
         self._server: asyncio.AbstractServer | None = None
         self._socket_identity: tuple[int, int] | None = None
+        self._clients: set[asyncio.Task] = set()
 
     async def start(self) -> None:
         if self._server is not None:
@@ -103,7 +104,7 @@ class UnixApiServer:
                 await writer.wait_closed()
                 raise RuntimeError(f"API socket is already active at {self.path}")
         self._server = await asyncio.start_unix_server(
-            self._serve_client,
+            self._start_client,
             path=self.path,
             limit=MAX_MESSAGE_BYTES + 1,
         )
@@ -116,6 +117,10 @@ class UnixApiServer:
         if server is not None:
             server.close()
             await server.wait_closed()
+        # Finish requests before the caller releases the Mesh/state owner.
+        # Idle clients have a bounded read timeout in _serve_client.
+        if self._clients:
+            await asyncio.gather(*self._clients, return_exceptions=True)
         try:
             socket_stat = self.path.lstat()
         except FileNotFoundError:
@@ -124,13 +129,18 @@ class UnixApiServer:
         if stat.S_ISSOCK(socket_stat.st_mode) and identity == self._socket_identity:
             self.path.unlink()
 
+    def _start_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        task = asyncio.create_task(self._serve_client(reader, writer))
+        self._clients.add(task)
+        task.add_done_callback(self._clients.discard)
+
     async def _serve_client(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
         request_id: object = None
         try:
             try:
-                raw = await reader.readline()
+                raw = await asyncio.wait_for(reader.readline(), timeout=5)
             except ValueError as exc:
                 raise ApiRequestError(
                     "message_too_large",
@@ -146,6 +156,10 @@ class UnixApiServer:
             request_id, method, params = _parse_request(raw)
             result = await self._handler(method, params)
             response = _response(request_id, result=result)
+        except TimeoutError:
+            response = _response(request_id, error={
+                "code": "request_timeout", "message": "request was not received in time",
+            })
         except ApiRequestError as exc:
             error = {"code": exc.code, "message": str(exc)}
             if exc.details is not None:

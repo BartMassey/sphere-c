@@ -1,3 +1,4 @@
+import asyncio
 import json
 import stat
 
@@ -132,3 +133,39 @@ async def test_api_rejects_oversized_request(tmp_path):
 
     assert response["ok"] is False
     assert response["error"]["code"] == "message_too_large"
+
+
+async def test_close_drains_inflight_handler_before_returning(tmp_path):
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    completed = asyncio.Event()
+
+    async def handler(_method, _params):
+        entered.set()
+        await release.wait()
+        completed.set()
+        return {"finished": True}
+
+    path = tmp_path / "sphere.sock"
+    server = UnixApiServer(path, handler)
+    await server.start()
+    client = asyncio.create_task(request(path, "control", {"command": "read"}))
+    closing = None
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        closing = asyncio.create_task(server.close())
+        await asyncio.sleep(0)
+        assert not closing.done()
+        assert not completed.is_set()
+        release.set()
+        response = await asyncio.wait_for(client, 1)
+        await asyncio.wait_for(closing, 1)
+        assert completed.is_set()
+        assert response["result"] == {"finished": True}
+        assert not path.exists()
+    finally:
+        release.set()
+        await asyncio.gather(client, return_exceptions=True)
+        if closing is not None:
+            await asyncio.gather(closing, return_exceptions=True)
+        await server.close()
