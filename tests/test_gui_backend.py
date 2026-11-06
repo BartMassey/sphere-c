@@ -106,7 +106,11 @@ EFFECTS = [
 def standard_handler(request):
     method = request["method"]
     params = request["params"]
-    if method == "status":
+    if method == "device.list":
+        result = {"devices": [{"device": "0x0002", "name": "ARI", "configured": True}]}
+    elif method == "enrollment.status":
+        result = {"active": False, "candidates": []}
+    elif method == "status":
         result = {"connected": True, "generation": 1, "device": "0x0002", "capabilities": CAPABILITIES}
     elif method == "control":
         result = {"state": {"effective": params["command"] != "off"}}
@@ -219,7 +223,7 @@ def test_effect_and_color_brightness_send_only_hsl(app, socket_path, effect_slug
         original_hsv = mesh_hsl_to_hsv({"lightness": 30000, "hue": 10000, "saturation": 40000})
         expected_hsl = hsv_to_mesh_hsl(24000, original_hsv["hue"], original_hsv["saturation"])
         assert [(item["method"], item["params"]) for item in writes if item["method"] != "lighting" or "=" in item["params"]["command"]] == [
-            ("lighting", {"command": "hsl=" + ",".join(map(str, expected_hsl))}),
+            ("lighting", {"command": "hsl=" + ",".join(map(str, expected_hsl)), "device": "0x0002"}),
         ]
         assert backend.effectActive
 
@@ -233,8 +237,8 @@ def test_effect_and_color_brightness_send_only_hsl(app, socket_path, effect_slug
         assert [(item["method"], item["params"]) for item in writes
                 if item["method"] == "effect.activate"
                 or (item["method"] == "lighting" and "=" in item["params"]["command"])] == [
-            ("effect.activate", {"name": "color-wheel"}),
-            ("lighting", {"command": "hsl=32768,0,65535"}),
+            ("effect.activate", {"name": "color-wheel", "device": "0x0002"}),
+            ("lighting", {"command": "hsl=32768,0,65535", "device": "0x0002"}),
         ]
         selected_hsv = dict(backend.hsv)
         before = len(service.requests)
@@ -246,7 +250,7 @@ def test_effect_and_color_brightness_send_only_hsl(app, socket_path, effect_slug
         )
         assert [(item["method"], item["params"]) for item in writes
                 if item["method"] == "lighting" and "=" in item["params"]["command"]] == [
-            ("lighting", {"command": "hsl=" + ",".join(map(str, expected_hsl))}),
+            ("lighting", {"command": "hsl=" + ",".join(map(str, expected_hsl)), "device": "0x0002"}),
         ]
         assert not any(item["method"] == "effect.activate" for item in writes)
         assert backend.colorModeActive
@@ -364,6 +368,7 @@ def test_battery_protocol_error_does_not_block_controls(app, socket_path):
         assert backend.connected
         assert backend.battery is None
         assert backend.errorMessage == ""
+        assert backend.serviceAvailable and backend.serviceState == "ready"
     finally:
         backend.close()
         service.close()
@@ -375,6 +380,9 @@ def test_missing_daemon_is_reported(app, tmp_path):
         until(app, lambda: backend._status_due is False and backend._next_id > 1)
         assert backend.connectionState == "unavailable"
         assert not backend.connected
+        assert not backend.serviceAvailable
+        assert backend.serviceState == "unavailable"
+        assert backend.serviceError
     finally:
         backend.close()
 
@@ -398,3 +406,199 @@ def test_preset_catalog_resolves_existing_media_and_handles_missing(tmp_path, mo
     assert catalog["bad"]["stillUrl"] == ""
     (directory / "catalog.json").write_text("invalid")
     assert gui_backend._preset_catalog() == {}
+
+
+def test_device_switch_targets_requests_and_discards_old_response(app, socket_path):
+    held = []
+
+    def handler(request):
+        if request['method'] == 'device.list':
+            return {'ok': True, 'result': {'devices': [
+                {'device': '0x0002', 'name': 'ARI', 'configured': True},
+                {'device': '0x0008', 'name': 'BEN', 'configured': True},
+            ]}}
+        if request['method'] == 'status':
+            return {'ok': True, 'result': {'connected': True, 'generation': 1,
+                                          'capabilities': CAPABILITIES}}
+        if request['method'] == 'control' and held == ['hold']:
+            held.append(request)
+            return None
+        return standard_handler(request)
+
+    service = FakeService(socket_path, handler)
+    backend = SphereBackend(socket_path, poll_connected_ms=60000)
+    try:
+        until(app, lambda: backend.battery == 87)
+        until(app, lambda: backend._active is None and not backend._queue)
+        assert backend.selectedName == 'ARI'
+        accepted = []
+        original = backend._accept
+        backend._accept = lambda field, value: (accepted.append(value), original(field, value))[-1]
+        held.append('hold')
+        backend.refresh()
+        until(app, lambda: len(held) == 2)
+        assert held[1]['params']['device'] == '0x0002'
+        backend.selectDevice('0x0008')
+        assert backend.power is None and backend.battery is None
+        assert backend.selectedName == 'BEN'
+        service.sockets[-1].write(json.dumps({
+            'version': 1, 'id': held[1]['id'], 'ok': True,
+            'result': {'state': {'effective': False}, 'old_device_response': True},
+        }).encode() + b'\n')
+        until(app, lambda: backend.battery == 87 and backend.connected)
+        assert not any(value.get('old_device_response') for value in accepted)
+        backend.setPower(False)
+        until(app, lambda: not backend.pending)
+        writes = [item for item in service.requests if item['method'] == 'control'
+                  and item['params']['command'] == 'off']
+        assert writes[-1]['params']['device'] == '0x0008'
+        for item in service.requests:
+            if item['method'] in {'status', 'control', 'lighting', 'effect.get', 'vendor.read'}:
+                assert item['params'].get('device') in {'0x0002', '0x0008'}
+    finally:
+        backend.close()
+        service.close()
+
+
+def test_gui_automatic_enrollment_and_close_stops_pending_start(app, socket_path):
+    start_request = []
+    active = [False]
+
+    def handler(request):
+        if request['method'] == 'enrollment.start':
+            start_request.append(request)
+            return None
+        if request['method'] == 'enrollment.stop':
+            active[0] = False
+            return {'ok': True, 'result': {'active': False, 'candidates': []}}
+        if request['method'] == 'enrollment.status':
+            return {'ok': True, 'result': {'active': active[0], 'candidates': []}}
+        return standard_handler(request)
+
+    service = FakeService(socket_path, handler)
+    backend = SphereBackend(socket_path, poll_connected_ms=60000)
+    try:
+        until(app, lambda: backend.battery == 87)
+        until(app, lambda: backend._active is None and not backend._queue)
+        backend.startEnrollment()
+        until(app, lambda: len(start_request) == 1)
+        assert start_request[0]['params'] == {'duration': 120, 'require_names': False}
+        backend.stopEnrollment()
+        active[0] = True
+        service.sockets[-1].write(json.dumps({
+            'version': 1, 'id': start_request[0]['id'], 'ok': True,
+            'result': {'active': True, 'candidates': []},
+        }).encode() + b'\n')
+        until(app, lambda: any(item['method'] == 'enrollment.stop' for item in service.requests))
+        until(app, lambda: not backend.managementPending)
+        assert not backend.enrollment['active']
+    finally:
+        backend.close()
+        service.close()
+
+
+def test_candidate_list_changes_only_when_candidates_change(app, tmp_path):
+    backend = SphereBackend(tmp_path / 'missing.sock', start=False)
+    signals = []
+    backend.candidatesChanged.connect(lambda: signals.append(True))
+    candidates = [{'candidate': 'example', 'name': '', 'state': 'awaiting_name'}]
+    try:
+        backend._accept_enrollment({'active': True, 'remaining_seconds': 100, 'candidates': candidates})
+        backend._accept_enrollment({'active': True, 'remaining_seconds': 99, 'candidates': candidates})
+        assert len(signals) == 1
+    finally:
+        backend.close()
+
+
+@pytest.mark.parametrize("operation,expected", [
+    (lambda backend: backend.setPower(False),
+     [("control", "off"), ("control", "read")]),
+    (lambda backend: backend.setHsl(20000, 10000, 30000),
+     [("lighting", "hsl=20000,10000,30000"), ("lighting", "hsl")]),
+])
+def test_ordinary_change_reads_back_only_changed_state(app, socket_path, operation, expected):
+    service = FakeService(socket_path, standard_handler)
+    backend = SphereBackend(socket_path, poll_connected_ms=60000)
+    try:
+        until(app, lambda: backend.battery == 87)
+        until(app, lambda: backend._active is None and not backend._queue)
+        before = len(service.requests)
+        operation(backend)
+        until(app, lambda: not backend.pending and backend._active is None and not backend._queue)
+        assert [(request["method"], request["params"].get("command"))
+                for request in service.requests[before:]] == expected
+    finally:
+        backend.close()
+        service.close()
+
+
+def test_daemon_loss_and_restart_are_distinct_from_mesh_failure(app, socket_path):
+    service = FakeService(socket_path, standard_handler)
+    backend = SphereBackend(socket_path, poll_connected_ms=60000, poll_waiting_ms=60000)
+    try:
+        until(app, lambda: backend.battery == 87)
+        until(app, lambda: backend._active is None and not backend._queue)
+        assert backend.serviceAvailable and backend.serviceState == 'ready'
+        service.close()
+        backend._poll_status()
+        until(app, lambda: backend.serviceState == 'unavailable')
+        assert not backend.connected
+        assert backend.serviceError
+        # An idle failure is visible even without a pending user command.
+        assert not backend.pending
+        until(app, lambda: backend._active is None and not backend._queue)
+        service = FakeService(socket_path, standard_handler)
+        backend._poll_status()
+        until(app, lambda: backend.connected and backend.serviceState == 'ready')
+        assert backend.serviceError == ''
+        until(app, lambda: backend._active is None and not backend._queue)
+        service.handler = lambda request: (
+            {'ok': True, 'result': {'connected': False, 'generation': 2,
+                                  'last_failure': 'Bluetooth Mesh is unavailable'}}
+            if request['method'] == 'status' else standard_handler(request)
+        )
+        backend._poll_status()
+        until(app, lambda: backend.connectionState == 'reconnecting')
+        assert backend.serviceAvailable and backend.serviceState == 'ready'
+        assert not backend.connected
+    finally:
+        backend.close()
+        service.close()
+
+
+def test_daemon_timeout_reports_uncertainty_without_repeating_write(app, socket_path):
+    def handler(request):
+        if request['method'] == 'control' and request['params']['command'] == 'off':
+            return None
+        return standard_handler(request)
+
+    service = FakeService(socket_path, handler)
+    backend = SphereBackend(socket_path, poll_connected_ms=60000)
+    try:
+        until(app, lambda: backend.battery == 87)
+        until(app, lambda: backend._active is None and not backend._queue)
+        backend.setPower(False)
+        until(app, lambda: any(item['method'] == 'control' and
+                              item['params']['command'] == 'off' for item in service.requests))
+        backend._on_timeout()
+        assert backend.serviceState == 'unresponsive'
+        assert not backend.serviceAvailable and not backend.connected
+        assert 'uncertain' in backend.serviceError
+        until(app, lambda: backend.connected)
+        assert sum(item['method'] == 'control' and item['params']['command'] == 'off'
+                   for item in service.requests) == 1
+    finally:
+        backend.close()
+        service.close()
+
+
+def test_invalid_daemon_response_is_not_reported_as_bluetooth_failure(app, socket_path):
+    service = FakeService(socket_path, lambda request: {'ok': True, 'result': 'invalid'})
+    backend = SphereBackend(socket_path, poll_waiting_ms=60000)
+    try:
+        until(app, lambda: backend.serviceState == 'invalid_response')
+        assert not backend.serviceAvailable and not backend.connected
+        assert 'invalid result' in backend.serviceError
+    finally:
+        backend.close()
+        service.close()

@@ -1,0 +1,89 @@
+#!/usr/bin/python3
+"""Hand a specifically addressed Bluetooth controller to bluetooth-meshd."""
+
+import argparse
+import os
+import re
+import subprocess
+import sys
+import time
+
+BTMGMT = "/usr/bin/btmgmt"
+MESHD = "/usr/libexec/bluetooth/bluetooth-meshd"
+ADDRESS = re.compile(r"[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}\Z")
+HEADER = re.compile(r"^hci([0-9]+):", re.MULTILINE)
+WAIT_SECONDS = 15.0
+INTERVAL = 0.5
+COMMAND_TIMEOUT = 2.0
+
+
+def controller_address(value):
+    if not ADDRESS.fullmatch(value):
+        raise argparse.ArgumentTypeError("controller must be a MAC address")
+    return value.upper()
+
+
+def find_controller(output, address):
+    """Return the matching index and supported settings, rejecting ambiguity."""
+    headers = list(HEADER.finditer(output))
+    matches = []
+    for pos, header in enumerate(headers):
+        end = headers[pos + 1].start() if pos + 1 < len(headers) else len(output)
+        section = output[header.end():end]
+        addresses = re.findall(r"^\s*addr\s+([0-9A-Fa-f:]+)\b", section, re.MULTILINE)
+        if address in (item.upper() for item in addresses):
+            settings = re.findall(r"^\s*supported settings:\s*(.*)$", section,
+                                  re.MULTILINE | re.IGNORECASE)
+            matches.append((int(header.group(1)), settings))
+    if len(matches) > 1:
+        raise RuntimeError("controller address is ambiguous")
+    if not matches:
+        return None
+    index, settings = matches[0]
+    if len(settings) != 1 or "le" not in settings[0].lower().split():
+        raise RuntimeError("controller does not report LE support")
+    return index
+
+
+def launch(address):
+    deadline = time.monotonic() + WAIT_SECONDS
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise RuntimeError("controller unavailable")
+        try:
+            result = subprocess.run([BTMGMT, "info"], capture_output=True, text=True,
+                                    timeout=min(COMMAND_TIMEOUT, remaining), check=False)
+            index = find_controller(result.stdout, address) if result.returncode == 0 else None
+        except (OSError, subprocess.TimeoutExpired):
+            index = None
+        if index is not None:
+            break
+        remaining = deadline - time.monotonic()
+        if remaining > 0:
+            time.sleep(min(INTERVAL, remaining))
+    try:
+        result = subprocess.run([BTMGMT, "--index", str(index), "power", "off"],
+                                capture_output=True, text=True, timeout=COMMAND_TIMEOUT,
+                                check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError("failed to power off selected controller") from exc
+    if result.returncode != 0:
+        raise RuntimeError("failed to power off selected controller")
+    os.execv(MESHD, [MESHD, "--io", f"generic:hci{index}"])
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--controller", required=True, type=controller_address)
+    args = parser.parse_args()
+    try:
+        launch(args.controller)
+    except (RuntimeError, OSError) as exc:
+        print(f"sphere-mesh-controller: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

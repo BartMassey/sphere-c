@@ -79,6 +79,9 @@ def main():
     mesh_only = commands.add_parser("mesh-only")
     mesh_only.add_argument("action", choices=("start", "restore"))
     mesh_only.add_argument("--controller", type=controller_address)
+    controller_service = commands.add_parser("mesh-controller", help="persistent dedicated Mesh controller setup")
+    controller_service.add_argument("action", choices=("install", "release"))
+    controller_service.add_argument("--controller", type=controller_address)
     commands.add_parser("controllers")
     proof = commands.add_parser("prove-mesh")
     proof.add_argument("name")
@@ -144,6 +147,14 @@ def main():
             parser.error("--controller is only valid with start")
         extra = ["--controller", args.controller] if args.controller else []
         run("python3", str(ROOT / "scripts/mesh_only_controller.py"), args.action,
+            *extra, privileged=True)
+    elif args.command == "mesh-controller":
+        if args.action == "install" and not args.controller:
+            parser.error("mesh-controller install requires --controller MAC")
+        if args.action == "release" and args.controller:
+            parser.error("mesh-controller release uses its saved controller address")
+        extra = ["--controller", args.controller] if args.controller else []
+        run("python3", str(ROOT / "scripts/install_mesh_controller.py"), args.action,
             *extra, privileged=True)
     elif args.command == "controllers":
         run("btmgmt", "info", privileged=True)

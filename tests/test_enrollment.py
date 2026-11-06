@@ -485,3 +485,227 @@ async def test_whole_window_radio_lease_survives_multiple_scans_and_restores_on_
 async def test_invalid_window(manager, duration):
     with pytest.raises(ValueError):
         manager.start(duration)
+
+@pytest.mark.parametrize("recover_pending", [False, True])
+async def test_completed_device_ignores_stale_pairing_beacon(manager, monkeypatch, recover_pending):
+    target = beacon()
+    now = [0]
+    manager._now = lambda: now[0]
+    manager._deadline = 20
+    if recover_pending:
+        manager.state["devices"]["0x0100"] = {
+            "uuid": target.uuid.hex(), "enrollment_pending": True,
+        }
+
+    class Scanner:
+        async def stop(self):
+            pass
+
+    class Stop(asyncio.Event):
+        async def wait(self):
+            now[0] += 2
+
+    manager._stop = Stop()
+    manager.transport.scanner = Scanner
+    attempts, inspections, scans = [], [], []
+
+    async def scan(*args, **kwargs):
+        scans.append(True)
+        if len(scans) == 2:
+            manager._stop.set()
+        return [target]
+
+    async def inspect(*args):
+        inspections.append(True)
+        return {"firmware_version": "0.5"}
+
+    async def commission(*args):
+        attempts.append("commission")
+
+    async def configure(address):
+        attempts.append("recovery")
+        manager.state["devices"]["0x0100"]["enrollment_pending"] = False
+
+    monkeypatch.setattr(module, "scan_unprovisioned", scan)
+    monkeypatch.setattr(module, "inspect_candidate", inspect)
+    monkeypatch.setattr(manager, "_commission", commission)
+    monkeypatch.setattr(manager, "_configure", configure)
+    await manager._run()
+    assert attempts == (["recovery"] if recover_pending else ["commission"])
+    assert len(inspections) == (0 if recover_pending else 1)
+    assert len(scans) == 2
+
+
+async def test_named_enrollment_requires_explicit_unique_name(manager, monkeypatch):
+    found = asyncio.Event()
+    target = beacon()
+    attempts = []
+
+    class Scanner:
+        async def stop(self):
+            pass
+
+    async def scan(*args, **kwargs):
+        found.set()
+        return [target]
+
+    async def inspect(*args):
+        return {"firmware_version": "0.5"}
+
+    async def commission(*args):
+        attempts.append(manager._candidates[target.uuid.hex()]["name"])
+        manager._stop.set()
+
+    manager.transport.scanner = Scanner
+    manager.state["devices"]["0x0090"] = {"name": "ARI"}
+    monkeypatch.setattr(module, "scan_unprovisioned", scan)
+    monkeypatch.setattr(module, "inspect_candidate", inspect)
+    monkeypatch.setattr(manager, "_commission", commission)
+    manager.start(30, require_names=True)
+    await found.wait()
+    await asyncio.sleep(0)
+    assert attempts == []
+    assert manager.status()["candidates"] == [{"candidate": target.uuid.hex(), "name": "", "state": "awaiting_name", "existing_device": None}]
+    for invalid in (" ari ", "", "0x1234"):
+        with pytest.raises(ValueError):
+            manager.name(target.uuid.hex(), invalid)
+    assert manager.name(target.uuid.hex(), " BEN ")["candidates"][0]["state"] == "queued"
+    with pytest.raises(ValueError):
+        manager.name(target.uuid.hex(), "OTHER")
+    await asyncio.wait_for(manager._task, 1)
+    assert attempts == ["BEN"]
+    assert manager.status()["candidates"][0]["state"] == "complete"
+
+
+async def test_named_candidate_pending_recovery_cannot_be_reprovisioned(manager):
+    target = beacon()
+    manager.start(30, require_names=True)
+    manager._candidates[target.uuid.hex()] = {"beacon": target, "details": {}, "name": "", "state": "failed"}
+    manager.state["devices"]["0x0100"] = {"uuid": target.uuid.hex(), "enrollment_pending": True}
+    with pytest.raises(ValueError, match="pending recovery"):
+        manager.name(target.uuid.hex(), "BEN")
+    manager.state["devices"].clear()
+    await manager.stop()
+
+async def test_named_checkpoint_persists_reserved_name_before_data(manager):
+    target = beacon()
+    manager._require_names = True
+    manager._candidates[target.uuid.hex()] = {
+        "beacon": target, "details": {}, "name": "BEN", "state": "provisioning",
+    }
+    prov = SimpleNamespace(capabilities=SimpleNamespace(num_elements=1), device_key=b"k" * 16)
+    manager._checkpoint(0x100, prov, target)
+    saved = json.loads(manager.store.path.read_text())
+    assert saved["devices"]["0x0100"]["name"] == "BEN"
+    assert saved["devices"]["0x0100"]["enrollment_pending"]
+
+
+async def test_stop_discards_queued_candidate(manager):
+    target = beacon()
+    manager._candidates[target.uuid.hex()] = {
+        "beacon": target, "details": {}, "name": "BEN", "state": "queued",
+    }
+    result = await manager.stop()
+    assert result["candidates"][0]["state"] == "awaiting_name"
+
+
+async def test_retry_rediscovers_device_and_keeps_scanner_active_until_gatt_finishes(manager, monkeypatch):
+    old, fresh = beacon(), beacon()
+    item = {'beacon': old, 'details': {}, 'name': 'Sphere 12111F', 'state': 'retrying'}
+    manager._candidates[old.uuid.hex()] = item
+    manager._deadline = manager._now() + 30
+    running = [False]
+
+    class Scanner:
+        async def stop(self):
+            running[0] = False
+
+    scanner = Scanner()
+    manager.transport.scanner = lambda: scanner
+
+    async def scan(actual, **options):
+        assert actual is scanner
+        assert options['stop_on'] == old.uuid
+        assert options['stop_after'] is False
+        running[0] = True
+        return [fresh]
+
+    async def commission(target, details):
+        assert target is fresh and target is not old
+        assert running[0]
+        manager._checkpoint(0x100, SimpleNamespace(
+            capabilities=SimpleNamespace(num_elements=6), device_key=b'k' * 16,
+        ), target)
+
+    monkeypatch.setattr(module, 'scan_unprovisioned', scan)
+    monkeypatch.setattr(manager, '_commission', commission)
+    assert await manager._commission_with_scan(old.uuid.hex(), item)
+    assert not running[0]
+    assert item['beacon'] is fresh
+    saved = json.loads(manager.store.path.read_text())
+    assert saved['devices']['0x0100']['name'] == item['name']
+    assert saved['devices']['0x0100']['enrollment_pending']
+
+
+def test_automatic_connection_retries_are_bounded_and_committed_data_recovers(manager):
+    manager._now = lambda: 0
+    target = beacon()
+    item = {'beacon': target, 'name': 'Sphere 12111F', 'state': 'provisioning'}
+    identity = target.uuid.hex()
+    for attempt, expected in ((1, 'retrying'), (2, 'retrying'), (3, 'failed')):
+        manager._candidate_attempts[identity] = attempt
+        manager._candidate_failed(identity, item, module.BearerError('connection lost'))
+        assert item['state'] == expected
+    manager._checkpoint(0x100, SimpleNamespace(
+        capabilities=SimpleNamespace(num_elements=6), device_key=b'k' * 16,
+    ), target)
+    manager._candidate_failed(identity, item, module.BearerError('completion lost'))
+    assert item['state'] == 'recovering'
+    assert manager.state['next_unicast'] == 0x106
+
+
+async def test_automatic_enrollment_uses_active_scan_and_saves_default_name_without_prompt(manager, monkeypatch):
+    target = beacon()
+    scanning = [False]
+    commissioned = []
+
+    class Scanner:
+        async def stop(self):
+            scanning[0] = False
+
+    manager.transport.scanner = Scanner
+
+    async def scan(*args, **kwargs):
+        scanning[0] = True
+        return [target]
+
+    async def inspect(*args):
+        assert scanning[0]
+        return {'firmware_version': '0.5'}
+
+    async def commission(actual, details):
+        assert scanning[0]
+        assert actual is target
+        commissioned.append(actual.uuid)
+        manager._checkpoint(0x100, SimpleNamespace(
+            capabilities=SimpleNamespace(num_elements=6), device_key=b'k' * 16,
+        ), target)
+        manager.state['devices']['0x0100']['enrollment_pending'] = False
+        manager.state['devices']['0x0100']['official_config_complete'] = True
+        manager.store.save(manager.state)
+        manager._stop.set()
+
+    monkeypatch.setattr(module, 'scan_unprovisioned', scan)
+    monkeypatch.setattr(module, 'inspect_candidate', inspect)
+    monkeypatch.setattr(manager, '_commission', commission)
+    manager.start(30)
+    await manager._task
+    assert commissioned == [target.uuid]
+    assert not scanning[0]
+    saved = json.loads(manager.store.path.read_text())
+    name = saved['devices']['0x0100']['name']
+    assert name.startswith('Sphere ') and name.strip()
+    assert manager.status()['candidates'][0]['name'] == name
+    assert manager.status()['candidates'][0]['state'] == 'complete'
+    await manager.stop()
+    assert '0x0100' in manager.state['devices']

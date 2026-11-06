@@ -126,6 +126,43 @@ ApplicationWindow {
         }
     }
 
+    function nameAvailable(name, exceptDevice) {
+        var normalized = name.trim().toLocaleLowerCase()
+        if (!normalized)
+            return false
+        var devices = sphere.devices || []
+        for (var i = 0; i < devices.length; ++i) {
+            if (devices[i].device !== exceptDevice
+                    && String(devices[i].name || "").trim().toLocaleLowerCase() === normalized)
+                return false
+        }
+        var candidates = (sphere.enrollment || ({})).candidates || []
+        for (var j = 0; j < candidates.length; ++j) {
+            if (candidates[j].name && candidates[j].state !== "awaiting_name"
+                    && String(candidates[j].name).trim().toLocaleLowerCase() === normalized)
+                return false
+        }
+        return true
+    }
+
+    function enrollmentHasState(state) {
+        var candidates = (sphere.enrollment || ({})).candidates || []
+        for (var i = 0; i < candidates.length; ++i) {
+            if (candidates[i].state === state)
+                return true
+        }
+        return false
+    }
+
+    function selectedDeviceIndex() {
+        var devices = sphere.devices || []
+        for (var i = 0; i < devices.length; ++i) {
+            if (devices[i].device === sphere.selectedDevice)
+                return i
+        }
+        return -1
+    }
+
     onActiveChanged: {
         if (active)
             sphere.refresh()
@@ -197,15 +234,50 @@ ApplicationWindow {
 
                 Label {
                     id: connectionText
+                    objectName: "connectionStatusLabel"
                     anchors.centerIn: parent
-                    text: sphere.connected ? qsTr("Connected")
-                           : sphere.connectionState === "reconnecting" ? qsTr("Reconnecting")
-                           : sphere.connectionState === "connecting" ? qsTr("Connecting")
-                           : qsTr("Offline")
+                    text: !sphere.serviceAvailable
+                          ? (sphere.serviceState === "connecting" ? qsTr("Connecting")
+                             : sphere.serviceState === "unresponsive" ? qsTr("Daemon busy")
+                             : sphere.serviceState === "invalid_response" ? qsTr("Daemon error")
+                             : qsTr("Daemon offline"))
+                          : (sphere.enrollment || ({})).active ? qsTr("Enrolling")
+                          : !sphere.selectedDevice ? qsTr("No Sphere")
+                          : sphere.connected ? qsTr("Connected") : qsTr("Mesh offline")
                     color: sphere.connected ? root.success : root.muted
                     font.pixelSize: 11
                     font.weight: Font.DemiBold
                 }
+            }
+        }
+
+        RowLayout {
+            Layout.fillWidth: true
+            Layout.bottomMargin: 12
+            spacing: 8
+
+            ComboBox {
+                objectName: "deviceSelector"
+                Layout.fillWidth: true
+                model: sphere.devices || []
+                textRole: "name"
+                currentIndex: root.selectedDeviceIndex()
+                enabled: sphere.serviceAvailable && !sphere.managementPending && !sphere.pending
+                         && !(sphere.enrollment || ({})).active && count > 0
+                displayText: currentIndex >= 0 ? currentText : qsTr("Select a Sphere")
+                onActivated: function(index) {
+                    sphere.selectDevice(model[index].device)
+                }
+                Accessible.name: qsTr("Selected Sphere")
+            }
+
+            Button {
+                objectName: "manageSpheresButton"
+                text: "+"
+                font.pixelSize: 22
+                enabled: sphere.serviceAvailable
+                Accessible.name: qsTr("Manage Spheres")
+                onClicked: manageDialog.open()
             }
         }
 
@@ -243,23 +315,66 @@ ApplicationWindow {
                     }
 
                     Label {
+                        objectName: "connectionProblemTitle"
                         Layout.fillWidth: true
-                        text: sphere.errorMessage ? sphere.errorMessage
+                        text: !sphere.serviceAvailable
+                              ? (sphere.serviceState === "connecting" ? qsTr("Connecting to the Sphere daemon…")
+                                 : sphere.serviceState === "unresponsive" ? qsTr("The Sphere daemon is not responding")
+                                 : sphere.serviceState === "invalid_response" ? qsTr("Unexpected response from the Sphere daemon")
+                                 : qsTr("Cannot reach the Sphere daemon"))
+                              : sphere.errorMessage ? sphere.errorMessage
                               : sphere.pending ? (sphere.pendingAction || qsTr("Updating Sphere…"))
-                              : qsTr("Waiting for the Sphere service")
-                        color: sphere.errorMessage ? root.danger : root.foreground
+                              : (sphere.enrollment || ({})).active ? qsTr("Enrollment in progress")
+                              : !sphere.selectedDevice ? qsTr("Add or select a Sphere to begin")
+                              : qsTr("The daemon is running, but Bluetooth Mesh is unavailable")
+                        color: sphere.errorMessage || (!sphere.serviceAvailable && sphere.serviceState !== "connecting")
+                               ? root.danger : root.foreground
                         font.pixelSize: 12
                         font.weight: Font.Medium
                         wrapMode: Text.WordWrap
                     }
 
                     Button {
-                        visible: !!sphere.errorMessage
+                        objectName: "retryDaemonButton"
+                        visible: !sphere.serviceAvailable
+                        text: qsTr("Retry now")
+                        flat: true
+                        onClicked: sphere.refresh()
+                        Accessible.name: qsTr("Retry connection to the Sphere daemon")
+                    }
+
+                    Button {
+                        visible: !!sphere.errorMessage && sphere.serviceAvailable
                         text: qsTr("Dismiss")
                         flat: true
                         onClicked: sphere.clearError()
                         Accessible.name: qsTr("Dismiss error")
                     }
+                }
+
+                Label {
+                    objectName: "daemonRecoveryHint"
+                    Layout.fillWidth: true
+                    visible: !sphere.serviceAvailable && root.height >= 640
+                    text: sphere.serviceState === "unresponsive"
+                          ? qsTr("A command may still finish. The app will reconnect automatically; check the Sphere's state before repeating an action.")
+                          : sphere.serviceState === "invalid_response"
+                            ? qsTr("Check that the app and daemon are compatible and use the same service socket. Retrying automatically.")
+                            : sphere.serviceState === "connecting"
+                              ? qsTr("Checking the local service. Bluetooth controls will be enabled when it is ready.")
+                              : qsTr("Make sure the Sphere daemon is running. The app will reconnect automatically. Check the service socket in Settings if it stays unavailable.")
+                    color: root.muted
+                    font.pixelSize: 11
+                    wrapMode: Text.WordWrap
+                }
+
+                Label {
+                    Layout.fillWidth: true
+                    visible: !sphere.serviceAvailable && !!sphere.serviceError && root.height >= 640
+                    text: sphere.serviceError
+                    color: root.muted
+                    font.pixelSize: 10
+                    wrapMode: Text.WrapAnywhere
                 }
 
                 Label {
@@ -275,7 +390,7 @@ ApplicationWindow {
                 }
 
                 Button {
-                    visible: !!sphere.errorMessage
+                    visible: !!sphere.errorMessage && sphere.serviceAvailable
                     text: qsTr("Refresh state")
                     flat: true
                     onClicked: sphere.refresh()
@@ -798,12 +913,6 @@ ApplicationWindow {
 
                             Label {
                                 Layout.fillWidth: true
-                                text: qsTr("Node: %1").arg(sphere.device || qsTr("unavailable"))
-                                color: root.muted
-                            }
-
-                            Label {
-                                Layout.fillWidth: true
                                 visible: !!sphere.lastFailure
                                 text: qsTr("Last failure: %1").arg(sphere.lastFailure)
                                 color: root.danger
@@ -919,4 +1028,247 @@ ApplicationWindow {
             }
         }
     }
+    Dialog {
+        id: manageDialog
+        objectName: "manageSpheresDialog"
+        title: qsTr("Manage Spheres")
+        modal: true
+        anchors.centerIn: parent
+        width: Math.min(root.width - 24, 420)
+        height: Math.min(root.height - 40, 650)
+        standardButtons: Dialog.Close
+        onOpened: sphere.refreshDevices()
+        onClosed: sphere.stopEnrollment()
+
+        ScrollView {
+            id: managementScroll
+            anchors.fill: parent
+            clip: true
+            ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+
+            ColumnLayout {
+                width: managementScroll.availableWidth
+                spacing: 12
+
+                Label {
+                    Layout.fillWidth: true
+                    text: qsTr("Your Spheres")
+                    font.pixelSize: 16
+                    font.weight: Font.DemiBold
+                    color: root.foreground
+                }
+
+                Label {
+                    Layout.fillWidth: true
+                    visible: (sphere.devices || []).length === 0
+                    text: qsTr("No Spheres enrolled yet.")
+                    color: root.muted
+                    wrapMode: Text.WordWrap
+                }
+
+                Repeater {
+                    model: sphere.devices || []
+                    delegate: Rectangle {
+                        required property var modelData
+                        Layout.fillWidth: true
+                        implicitHeight: deviceRow.implicitHeight + 20
+                        radius: 12
+                        color: root.cardColor
+                        border.color: root.borderColor
+                        RowLayout {
+                            id: deviceRow
+                            anchors.fill: parent
+                            anchors.margins: 10
+                            Label {
+                                Layout.fillWidth: true
+                                text: modelData.name || qsTr("Unnamed Sphere")
+                                color: root.foreground
+                                elide: Text.ElideRight
+                            }
+                            Button {
+                                text: qsTr("Rename")
+                                flat: true
+                                enabled: sphere.serviceAvailable && !sphere.managementPending
+                                         && !(sphere.enrollment || ({})).active
+                                onClicked: {
+                                    renameDialog.device = modelData.device
+                                    renameField.text = modelData.name || ""
+                                    renameDialog.open()
+                                }
+                            }
+                            Button {
+                                text: qsTr("Forget")
+                                flat: true
+                                enabled: sphere.serviceAvailable && !sphere.managementPending
+                                         && !(sphere.enrollment || ({})).active
+                                onClicked: {
+                                    forgetDialog.device = modelData.device
+                                    forgetDialog.deviceName = modelData.name || qsTr("this Sphere")
+                                    forgetDialog.open()
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Label {
+                    Layout.fillWidth: true
+                    text: qsTr("Add a Sphere")
+                    font.pixelSize: 16
+                    font.weight: Font.DemiBold
+                    color: root.foreground
+                    Layout.topMargin: 8
+                }
+                Label {
+                    Layout.fillWidth: true
+                    text: qsTr("Put each Sphere into pairing mode with three quick presses, then start enrollment. Compatible 0.5 Spheres are enrolled automatically with unique default names. You can rename them afterward.")
+                    color: root.muted
+                    wrapMode: Text.WordWrap
+                }
+                Button {
+                    objectName: "enrollmentToggle"
+                    text: (sphere.enrollment || ({})).active ? qsTr("Stop enrollment") : qsTr("Enroll nearby Spheres")
+                    enabled: sphere.serviceAvailable && !sphere.managementPending
+                    onClicked: {
+                        if ((sphere.enrollment || ({})).active)
+                            sphere.stopEnrollment()
+                        else
+                            sphere.startEnrollment()
+                    }
+                }
+                Label {
+                    Layout.fillWidth: true
+                    visible: !!(sphere.enrollment || ({})).active
+                    objectName: "enrollmentProgress"
+                    text: (root.enrollmentHasState("recovering") ? qsTr("Finishing setup…")
+                           : (sphere.enrollment || ({})).phase === "checking" ? qsTr("Checking compatibility…")
+                           : (sphere.enrollment || ({})).phase === "provisioning"
+                             || (sphere.enrollment || ({})).phase === "configuring"
+                             || root.enrollmentHasState("provisioning") ? qsTr("Provisioning…")
+                           : qsTr("Discovering…"))
+                          + " " + qsTr("%1 seconds remaining. Stopping enrollment finishes provisioning already started.").arg((sphere.enrollment || ({})).remaining_seconds || 0)
+                    color: root.muted
+                    wrapMode: Text.WordWrap
+                }
+                Repeater {
+                    model: sphere.enrollmentCandidates || []
+                    delegate: ColumnLayout {
+                        required property var modelData
+                        Layout.fillWidth: true
+                        spacing: 3
+                        Label {
+                            objectName: "candidateName"
+                            Layout.fillWidth: true
+                            text: modelData.name || qsTr("Sphere")
+                            color: root.foreground
+                            wrapMode: Text.WordWrap
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            objectName: "candidateStatus"
+                            text: modelData.state === "failed" || modelData.state === "error"
+                                  ? ((sphere.enrollment || ({})).active
+                                     ? qsTr("Could not finish after several attempts. Enrollment continues for other Spheres; stop and start enrollment to retry this one.")
+                                     : qsTr("Could not finish. Start discovery to retry."))
+                                  : modelData.state === "retrying"
+                                    ? qsTr("Connection interrupted. Retrying automatically…")
+                                  : modelData.state === "recovering"
+                                    ? ((sphere.enrollment || ({})).active
+                                       ? qsTr("Network details saved. Finishing setup automatically; leave this Sphere on.")
+                                       : qsTr("Network details saved. Start discovery to resume setup; leave this Sphere on."))
+                                  : modelData.state === "complete" || modelData.state === "enrolled"
+                                    ? qsTr("Enrolled")
+                                  : modelData.state === "checking" ? qsTr("Checking compatibility…")
+                                  : modelData.state === "provisioning" ? qsTr("Provisioning…")
+                                  : qsTr("Enrollment in progress…")
+                            color: modelData.state === "failed" || modelData.state === "error" ? root.danger : root.muted
+                            wrapMode: Text.WordWrap
+                        }
+                    }
+                }
+                Label {
+                    Layout.fillWidth: true
+                    visible: !!sphere.managementError || (((sphere.enrollment || ({})).errors || []).length > 0
+                             && !root.enrollmentHasState("recovering") && !root.enrollmentHasState("complete")
+                             && !root.enrollmentHasState("retrying")
+                             && !root.enrollmentHasState("failed"))
+                    text: sphere.managementError || qsTr("Enrollment failed. Please try again.")
+                    color: root.danger
+                    wrapMode: Text.WordWrap
+                }
+                Label {
+                    Layout.fillWidth: true
+                    visible: !sphere.serviceAvailable
+                    text: qsTr("The Sphere service is unavailable.")
+                    color: root.danger
+                    wrapMode: Text.WordWrap
+                }
+            }
+        }
+    }
+
+    Dialog {
+        id: renameDialog
+        property string device: ""
+        title: qsTr("Rename Sphere")
+        modal: true
+        anchors.centerIn: parent
+        width: Math.min(root.width - 32, 360)
+        standardButtons: Dialog.Cancel
+        ColumnLayout {
+            anchors.fill: parent
+            TextField {
+                id: renameField
+                Layout.fillWidth: true
+                placeholderText: qsTr("Sphere name")
+                maximumLength: 64
+                Accessible.name: qsTr("Sphere name")
+            }
+            Label {
+                Layout.fillWidth: true
+                visible: renameField.text.trim().length > 0 && !root.nameAvailable(renameField.text, renameDialog.device)
+                text: qsTr("Choose a unique name.")
+                color: root.danger
+                wrapMode: Text.WordWrap
+            }
+            Button {
+                text: qsTr("Save")
+                enabled: sphere.serviceAvailable && !sphere.managementPending
+                         && root.nameAvailable(renameField.text, renameDialog.device)
+                onClicked: {
+                    sphere.renameDevice(renameDialog.device, renameField.text.trim())
+                    renameDialog.close()
+                }
+            }
+        }
+    }
+
+    Dialog {
+        id: forgetDialog
+        property string device: ""
+        property string deviceName: ""
+        title: qsTr("Forget Sphere?")
+        modal: true
+        anchors.centerIn: parent
+        width: Math.min(root.width - 32, 360)
+        standardButtons: Dialog.Cancel
+        ColumnLayout {
+            anchors.fill: parent
+            Label {
+                Layout.fillWidth: true
+                text: qsTr("Forget %1 locally? This does not reset the physical Sphere. To pair it again, put it in pairing mode with three quick presses.").arg(forgetDialog.deviceName)
+                color: root.foreground
+                wrapMode: Text.WordWrap
+            }
+            Button {
+                text: qsTr("Forget")
+                enabled: sphere.serviceAvailable && !sphere.managementPending
+                onClicked: {
+                    sphere.forgetDevice(forgetDialog.device)
+                    forgetDialog.close()
+                }
+            }
+        }
+    }
+
 }

@@ -1,0 +1,8 @@
+# Dedicated Mesh controller plus a separate ordinary BlueZ adapter.
+mode = "mesh"
+# Replace with the ordinary USB adapter's hardware address.
+# This never selects the controller owned by bluetooth-meshd.
+adapter = "AA:BB:CC:DD:EE:FF"
+# Mesh enrollment remains experimental; opt in only deliberately.
+experimental_enrollment = false
+verbose = false

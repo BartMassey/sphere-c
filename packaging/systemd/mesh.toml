@@ -1,0 +1,5 @@
+# Dedicated controller configured separately in system bluetooth-meshd.
+mode = "mesh"
+# No ordinary BlueZ adapter is required for routine Mesh control.
+experimental_enrollment = false
+verbose = false

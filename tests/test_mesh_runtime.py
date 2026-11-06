@@ -304,3 +304,29 @@ async def test_bluez_enrollment_rejects_changed_iv_state_before_work(properties)
     runtime.supervisor.suspend.assert_not_awaited()
     runtime.supervisor.start.assert_not_called()
     assert not runtime.command_lock.locked()
+
+async def test_forget_preserves_allocation_and_selects_remaining_device():
+    runtime, node, state, store = mesh_runtime()
+    before = (state["seq"], state["devices"]["0x012a"]["device_key"])
+    result = await runtime.handle("device.forget", {"device": "ARI"})
+    assert result == {"device": "0x012a", "forgotten": True}
+    assert state["devices"]["0x012a"]["forgotten"]
+    assert (state["seq"], state["devices"]["0x012a"]["device_key"]) == before
+    assert state["active_device"] == "0x0124"
+    assert state["composition"] == state["devices"]["0x0124"]["composition"]
+    assert [item["name"] for item in runtime.inventory()["devices"]] == ["BEN"]
+    store.save.assert_called_once_with(state)
+    with pytest.raises(ApiRequestError) as failure:
+        await runtime.handle("status", {"device": "ARI"})
+    assert failure.value.code == "unknown_device"
+    node.request.assert_not_awaited()
+
+
+async def test_device_management_rejects_active_enrollment():
+    runtime, _, _, _ = mesh_runtime()
+    runtime.enrollment = SimpleNamespace(status=Mock(return_value={"active": True}))
+    for method, params in (("device.forget", {"device": "ARI"}),
+                           ("device.rename", {"device": "ARI", "name": "TEST"})):
+        with pytest.raises(ApiRequestError) as failure:
+            await runtime.handle(method, params)
+        assert failure.value.code == "unavailable"

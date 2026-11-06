@@ -11,6 +11,7 @@ import sys
 import time
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
+from copy import deepcopy
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
@@ -29,6 +30,7 @@ from .lighting import (
     LightingUnsupported,
     parse_lighting_command,
 )
+from .service_config import load_service_config
 from .state import StateError, StateLockedError, StateStore
 from .transport import (
     LocalTransport,
@@ -879,7 +881,7 @@ class MeshRuntime:
     def members(self) -> dict:
         return {
             key: entry for key, entry in self.state["devices"].items()
-            if not entry.get("superseded_by")
+            if not entry.get("superseded_by") and not entry.get("forgotten")
         }
 
     def inventory(self) -> dict:
@@ -972,13 +974,23 @@ class MeshRuntime:
                     "Shared-adapter enrollment is experimental; use --experimental-enrollment to test it",
                 )
             if method == "enrollment.start":
-                if set(params) - {"duration"}:
-                    raise ApiRequestError("invalid_params", "Expected optional duration")
+                if set(params) - {"duration", "require_names"}:
+                    raise ApiRequestError("invalid_params", "Expected optional duration and require_names")
+                require_names = params.get("require_names", False)
+                if type(require_names) is not bool:
+                    raise ApiRequestError("invalid_params", "require_names must be a boolean")
                 duration = params.get("duration", 120)
                 if type(duration) not in (int, float) or not 1 <= duration <= 3600:
                     raise ApiRequestError("invalid_params", "duration must be 1..3600 seconds")
                 try:
-                    return self.enrollment.start(duration)
+                    return self.enrollment.start(duration, require_names) if "require_names" in params else self.enrollment.start(duration)
+                except ValueError as exc:
+                    raise ApiRequestError("invalid_params", str(exc)) from exc
+            if method == "enrollment.name":
+                if set(params) != {"candidate", "name"}:
+                    raise ApiRequestError("invalid_params", "Expected candidate and name")
+                try:
+                    return self.enrollment.name(params["candidate"], params["name"])
                 except ValueError as exc:
                     raise ApiRequestError("invalid_params", str(exc)) from exc
             if params:
@@ -988,20 +1000,41 @@ class MeshRuntime:
             if method == "enrollment.stop":
                 return await self.enrollment.stop()
             raise ApiRequestError("unknown_method", f"unknown method: {method}")
-        if method == "device.rename":
-            if set(params) != {"device", "name"}:
-                raise ApiRequestError("invalid_params", "Expected device and name")
-            name = params["name"]
-            if not isinstance(name, str) or not name.strip() or len(name) > 64:
-                raise ApiRequestError("invalid_params", "name must contain 1..64 characters")
+        if method in ("device.rename", "device.forget"):
+            expected = {"device", "name"} if method == "device.rename" else {"device"}
+            if set(params) != expected:
+                raise ApiRequestError("invalid_params", "Invalid device parameters")
+            if self.enrollment is not None and self.enrollment.status()["active"]:
+                raise ApiRequestError("unavailable", "Device management is unavailable during enrollment")
             async with self.command_lock:
+                if self.enrollment is not None and self.enrollment.status()["active"]:
+                    raise ApiRequestError("unavailable", "Device management is unavailable during enrollment")
                 key = self._target(params["device"])
-                if any(e.get("name") == name.strip() and k != key
-                       for k, e in self.members().items()):
-                    raise ApiRequestError("invalid_params", "Device name already exists")
-                self.state["devices"][key]["name"] = name.strip()
+                entry = self.state["devices"][key]
+                if method == "device.rename":
+                    from .enrollment import validate_name
+                    try:
+                        # Exclude this record even when it lacks UUID and MAC.
+                        others = {k: e for k, e in self.state["devices"].items() if k != key}
+                        name = validate_name(params["name"], others)
+                    except ValueError as exc:
+                        raise ApiRequestError("invalid_params", str(exc)) from exc
+                    entry["name"] = name
+                    self.store.save(self.state)
+                    return {"device": key, "name": name}
+                entry["forgotten"] = True
+                self._responses.pop(key, None)
+                if self.state.get("active_device") == key:
+                    remaining = self.members()
+                    replacement = next((k for k, e in remaining.items()
+                                        if not e.get("enrollment_pending")), None)
+                    self.state["active_device"] = replacement
+                    for field in ("composition", "control_model", "official_config_complete"):
+                        self.state.pop(field, None)
+                        if replacement is not None and field in remaining[replacement]:
+                            self.state[field] = deepcopy(remaining[replacement][field])
                 self.store.save(self.state)
-            return {"device": key, "name": name.strip()}
+                return {"device": key, "forgotten": True}
         if method == "health" and not params:
             session = self.supervisor.session
             return {
@@ -1073,9 +1106,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                 "can remain available for ordinary Bluetooth. This command does "
                 "not change controller ownership or system services."),
     )
-    parser.add_argument("--state", type=Path, default=DEFAULT_STATE)
-    parser.add_argument("--socket", type=Path, default=DEFAULT_SOCKET)
-    parser.add_argument("--verbose", action="store_true")
+    parser.add_argument("--config", type=Path, help="read daemon settings from a TOML file")
+    parser.add_argument("--state", type=Path)
+    parser.add_argument("--socket", type=Path)
+    parser.add_argument("--verbose", action=argparse.BooleanOptionalAction, default=None)
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument(
         "--mode", choices=("proxy", "mesh"),
@@ -1092,15 +1126,27 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
               "not the controller owned by bluetooth-meshd. Prefer a stable MAC"),
     )
     parser.add_argument(
-        "--experimental-enrollment", action="store_true",
+        "--experimental-enrollment", action=argparse.BooleanOptionalAction, default=None,
         help="enable enrollment testing despite observed shared-adapter failures",
     )
     parser.add_argument(
-        "--enroll-seconds", type=int, default=0,
+        "--enroll-seconds", type=int,
         help="start nearby enrollment for 1..3600 seconds on startup",
     )
     args = parser.parse_args(argv)
-    args.mode = args.mode or ("mesh" if args.backend == "bluez" else "proxy")
+    try:
+        config = load_service_config(args.config) if args.config else {}
+    except ValueError as exc:
+        parser.error(str(exc))
+    for key, default in (("state", DEFAULT_STATE), ("socket", DEFAULT_SOCKET),
+                         ("adapter", None), ("verbose", False),
+                         ("experimental_enrollment", False), ("enroll_seconds", 0)):
+        if getattr(args, key) is None:
+            setattr(args, key, config.get(key, default))
+    args.mode = args.mode or (
+        ("mesh" if args.backend == "bluez" else "proxy")
+        if args.backend is not None else config.get("mode", "proxy")
+    )
     args.backend = "bluez" if args.mode == "mesh" else "proxy"
     if args.enroll_seconds and not 1 <= args.enroll_seconds <= 3600:
         parser.error("--enroll-seconds must be 1..3600")
@@ -1119,7 +1165,8 @@ def _active_unicast(state: dict) -> int:
 async def open_proxy_network(transport, state: dict, store: StateStore):
     """Use any owned proxy with one shared context and all current keys."""
     members = [(int(key, 16), entry) for key, entry in state["devices"].items()
-               if not entry.get("superseded_by") and not entry.get("enrollment_pending")]
+               if not entry.get("superseded_by") and not entry.get("forgotten")
+               and not entry.get("enrollment_pending")]
     if not members:
         raise BearerError("no configured Mesh member is available")
     netkey = bytes.fromhex(state["netkey"])

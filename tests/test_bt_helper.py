@@ -224,3 +224,17 @@ def test_daemon_stop_never_kills_after_failed_process_query(helper, monkeypatch,
     else:
         helper.invoke("daemon-stop")
     kill.assert_not_called()
+
+
+def test_persistent_controller_install_uses_fixed_privileged_script(helper):
+    helper.invoke('mesh-controller', 'install', '--controller', 'aa:bb:cc:dd:ee:ff')
+    assert helper.process.call_args.args[0] == [
+        'sudo', '-n', 'python3', str(helper.root / 'scripts/install_mesh_controller.py'),
+        'install', '--controller', 'AA:BB:CC:DD:EE:FF',
+    ]
+
+
+def test_persistent_controller_install_requires_explicit_identity(helper):
+    with pytest.raises(SystemExit):
+        helper.invoke('mesh-controller', 'install')
+    helper.process.assert_not_called()

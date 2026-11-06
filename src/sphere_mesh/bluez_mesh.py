@@ -322,7 +322,7 @@ class BluezMeshSession:
             if not exc.error_name.endswith("AlreadyExists"):
                 raise
         for key, entry in self.state["devices"].items():
-            if entry.get("superseded_by"):
+            if entry.get("superseded_by") or entry.get("forgotten"):
                 continue
             count = entry.get("element_count") or len(entry.get("composition", {}).get("elements", []))
             if not count:

@@ -278,6 +278,11 @@ assert grid.property("columns") == 3
 assert all(tile.property("height") > 60 for tile in tiles)
 assert len({round(by_slug["effect-" + str(index)].property("x")) for index in range(3)}) == 3
 assert by_slug["effect-2"].property("selected")
+backend._put(pending=True, pendingAction="Changing brightness")
+app.processEvents()
+unchanged_tiles = [item for item in grid.childItems() if item.objectName() == "effectTile"]
+assert all(any(item is tile for item in unchanged_tiles) for tile in tiles)
+backend._put(pending=False, pendingAction="")
 brightness_slider = root.findChild(QObject, "brightnessSlider")
 dimming = by_slug["effect-2"].findChild(QObject, "effectPreviewRendering")
 brightness_slider.setProperty("previewValue", 100)
@@ -350,6 +355,110 @@ assert repeater.property("count") == 1
         cwd=Path(__file__).resolve().parents[1],
         env={**os.environ, "QT_QPA_PLATFORM": "offscreen", "QT_QUICK_BACKEND": "software"},
         text=True,
+        timeout=15,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_management_dialog_has_named_inventory_and_automatic_enrollment():
+    script = '''
+from pathlib import Path
+import tempfile
+from PySide6.QtCore import QObject, QMetaObject
+from PySide6.QtGui import QGuiApplication
+from PySide6.QtQml import QQmlApplicationEngine
+from PySide6.QtQuick import QQuickItem
+from sphere_mesh.gui.backend import SphereBackend
+
+app = QGuiApplication([])
+with tempfile.TemporaryDirectory() as directory:
+    backend = SphereBackend(Path(directory) / 'missing.sock', start=False)
+    backend._put(devices=[{'device': '0x012a', 'name': 'ARI', 'configured': True},
+                          {'device': '0x0131', 'name': 'BEN', 'configured': True}],
+                 device='0x012a', serviceAvailable=True)
+    backend._enqueue = lambda request: None
+    engine = QQmlApplicationEngine()
+    engine.rootContext().setContextProperty('sphere', backend)
+    engine.load(str(Path('src/sphere_mesh/gui/qml/Main.qml').resolve()))
+    root = engine.rootObjects()[0]
+    app.processEvents()
+    selector = root.findChild(QObject, 'deviceSelector')
+    assert selector.property('count') == 2
+    assert selector.property('currentText') == 'ARI'
+    assert root.nameAvailable('CYR', '')
+    assert not root.nameAvailable(' ari ', '')
+    assert root.nameAvailable('BEN', '0x0131')
+    button = root.findChild(QObject, 'manageSpheresButton')
+    assert QMetaObject.invokeMethod(button, 'click')
+    app.processEvents()
+    dialog = root.findChild(QObject, 'manageSpheresDialog')
+    assert dialog.property('visible')
+    def find_visual(item, name):
+        if item.objectName() == name:
+            return item
+        for child in item.childItems():
+            found = find_visual(child, name)
+            if found is not None:
+                return found
+        return None
+    toggle = find_visual(dialog.property('contentItem'), 'enrollmentToggle')
+    assert toggle.property('text') == 'Enroll nearby Spheres'
+    backend._accept_enrollment({'active': True, 'phase': 'checking',
+                                'remaining_seconds': 100, 'candidates': []})
+    app.processEvents()
+    assert 'Checking compatibility' in find_visual(dialog.property('contentItem'), 'enrollmentProgress').property('text')
+    candidates = [{'candidate': 'uuid', 'name': 'Sphere123C04', 'state': 'provisioning'}]
+    backend._accept_enrollment({'active': True, 'phase': 'provisioning',
+                                'remaining_seconds': 99, 'candidates': candidates})
+    app.processEvents()
+    assert find_visual(dialog.property('contentItem'), 'candidateName').property('text') == 'Sphere123C04'
+    assert 'Provisioning' in find_visual(dialog.property('contentItem'), 'candidateStatus').property('text')
+    assert find_visual(dialog.property('contentItem'), 'candidateNameField') is None
+    assert find_visual(dialog.property('contentItem'), 'candidateAction') is None
+    assert toggle.property('text') == 'Stop enrollment'
+    failed = [{'candidate': 'uuid', 'name': 'Sphere123C04', 'state': 'failed'}]
+    backend._accept_enrollment({'active': True, 'candidates': failed, 'errors': ['failed']})
+    app.processEvents()
+    assert 'Enrollment continues for other Spheres' in find_visual(dialog.property('contentItem'), 'candidateStatus').property('text')
+    backend._accept_enrollment({'active': False, 'candidates': failed})
+    app.processEvents()
+    assert 'Start discovery to retry' in find_visual(dialog.property('contentItem'), 'candidateStatus').property('text')
+    recovering = [{'candidate': 'uuid', 'name': 'Sphere123C04', 'state': 'recovering'}]
+    backend._accept_enrollment({'active': True, 'candidates': recovering, 'errors': ['failed']})
+    app.processEvents()
+    assert 'Finishing setup automatically' in find_visual(dialog.property('contentItem'), 'candidateStatus').property('text')
+    backend._accept_enrollment({'active': False, 'candidates': recovering})
+    app.processEvents()
+    assert 'Start discovery to resume' in find_visual(dialog.property('contentItem'), 'candidateStatus').property('text')
+    backend._accept_enrollment({'active': True, 'candidates': candidates})
+    app.processEvents()
+    assert not selector.property('enabled')
+    backend._put(enrollment={'active': False}, serviceAvailable=False,
+                 serviceState='unavailable', serviceError='Connection refused',
+                 connected=False)
+    app.processEvents()
+    title = root.findChild(QObject, 'connectionProblemTitle')
+    assert title.property('text') == 'Cannot reach the Sphere daemon'
+    assert root.findChild(QObject, 'connectionStatusLabel').property('text') == 'Daemon offline'
+    assert root.findChild(QObject, 'daemonRecoveryHint').property('visible')
+    retry = root.findChild(QObject, 'retryDaemonButton')
+    assert retry.property('visible')
+    calls = []
+    backend._enqueue = calls.append
+    backend._status_due = False
+    assert QMetaObject.invokeMethod(retry, 'click')
+    assert calls[-1].method == 'device.list'
+    backend._put(serviceAvailable=True, serviceState='ready', serviceError='',
+                 connected=False)
+    app.processEvents()
+    assert title.property('text') == 'The daemon is running, but Bluetooth Mesh is unavailable'
+    assert not retry.property('visible')
+    backend.close()
+'''
+    result = subprocess.run(
+        [sys.executable, '-c', script], capture_output=True, text=True,
+        cwd=Path(__file__).resolve().parents[1],
+        env={**os.environ, 'QT_QPA_PLATFORM': 'offscreen', 'QT_QUICK_BACKEND': 'software'},
         timeout=15,
     )
     assert result.returncode == 0, result.stderr

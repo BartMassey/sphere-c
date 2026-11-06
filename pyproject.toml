@@ -27,6 +27,7 @@ sphere-mesh = "sphere_mesh.provision:main"
 sphere-capture = "sphere_mesh.capture:main"
 sphere-meshctl = "sphere_mesh.client:main"
 sphere-meshd = "sphere_mesh.daemon:main"
+sphere-mesh-service = "sphere_mesh.user_service:main"
 sphere-mesh-gui = "sphere_mesh.gui.app:main"
 
 [tool.setuptools.packages.find]
@@ -39,6 +40,14 @@ where = ["src"]
 "share/applications" = ["packaging/desktop/sphere-mesh-gui.desktop"]
 "share/icons/hicolor/scalable/apps" = ["packaging/desktop/sphere-mesh-gui.svg"]
 "share/doc/sphere-mesh-lab" = ["packaging/desktop/ASSETS.md"]
+"share/sphere-mesh/systemd" = [
+    "packaging/systemd/sphere-mesh.service",
+    "packaging/systemd/proxy.toml",
+    "packaging/systemd/mesh.toml",
+    "packaging/systemd/split.toml",
+    "packaging/systemd/sphere-mesh-controller",
+    "scripts/install_mesh_controller.py",
+]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

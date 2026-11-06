@@ -107,12 +107,16 @@ class _Request:
     callback: Callable[[dict | None, dict | None], None]
     generation: int = 0
     timeout_ms: int = 15000
+    target: str | None = None
 
 
 class SphereBackend(QObject):
     """QML-facing service model; all I/O stays on the Qt event loop."""
 
     stateChanged = Signal()
+    inventoryChanged = Signal()
+    candidatesChanged = Signal()
+    effectsChanged = Signal()
 
     def __init__(
         self,
@@ -137,6 +141,8 @@ class SphereBackend(QObject):
         self._poll_connected_ms = poll_connected_ms
         self._poll_waiting_ms = poll_waiting_ms
         self._status_due = False
+        self._management_status_due = False
+        self._stop_enrollment_requested = False
         self._socket_identity: tuple[int, int] | None = None
         self._state: dict = {
             "connectionState": "unavailable",
@@ -158,6 +164,14 @@ class SphereBackend(QObject):
             "generation": 0,
             "device": "",
             "lastFailure": "",
+            "devices": [],
+            "serviceAvailable": False,
+            "serviceState": "connecting",
+            "serviceError": "",
+            "managementPending": False,
+            "managementError": "",
+            "enrollment": {"active": False, "candidates": []},
+            "enrollmentCandidates": [],
         }
         self._verification: dict = {}
         self._timeout = QTimer(self)
@@ -166,6 +180,9 @@ class SphereBackend(QObject):
         self._poll = QTimer(self)
         self._poll.setSingleShot(True)
         self._poll.timeout.connect(self._poll_status)
+        self._management_poll = QTimer(self)
+        self._management_poll.setSingleShot(True)
+        self._management_poll.timeout.connect(self._poll_enrollment)
         if start:
             QTimer.singleShot(0, self._poll_status)
 
@@ -191,27 +208,51 @@ class SphereBackend(QObject):
     effect = Property("QVariant", lambda self: self._get("effect"), notify=stateChanged)
     effectActive = Property(bool, lambda self: self._get("effectActive"), notify=stateChanged)
     colorModeActive = Property(bool, lambda self: self._get("colorModeActive"), notify=stateChanged)
-    effects = Property("QVariant", lambda self: self._get("effects"), notify=stateChanged)
+    effects = Property("QVariant", lambda self: self._get("effects"), notify=effectsChanged)
     battery = Property("QVariant", lambda self: self._get("battery"), notify=stateChanged)
     generation = Property(int, lambda self: self._get("generation"), notify=stateChanged)
     device = Property(str, lambda self: self._get("device"), notify=stateChanged)
+    selectedDevice = Property(str, lambda self: self._get("device"), notify=stateChanged)
+    selectedName = Property(str, lambda self: next(
+        (entry["name"] for entry in self._state["devices"]
+         if entry["device"] == self._state["device"]), ""), notify=stateChanged)
+    devices = Property("QVariant", lambda self: self._get("devices"), notify=inventoryChanged)
+    enrollmentCandidates = Property("QVariant", lambda self: self._get("enrollmentCandidates"), notify=candidatesChanged)
+    serviceAvailable = Property(bool, lambda self: self._get("serviceAvailable"), notify=stateChanged)
+    serviceState = Property(str, lambda self: self._get("serviceState"), notify=stateChanged)
+    serviceError = Property(str, lambda self: self._get("serviceError"), notify=stateChanged)
+    managementPending = Property(bool, lambda self: self._get("managementPending"), notify=stateChanged)
+    managementError = Property(str, lambda self: self._get("managementError"), notify=stateChanged)
+    enrollment = Property("QVariant", lambda self: self._get("enrollment"), notify=stateChanged)
     lastFailure = Property(str, lambda self: self._get("lastFailure"), notify=stateChanged)
     socketPath = Property(str, lambda self: self._socket_path, constant=True)
     diagnostics = Property(str, lambda self: self._diagnostics(), notify=stateChanged)
 
     def _put(self, **values) -> None:
         changed = False
+        inventory_changed = "devices" in values and values["devices"] != self._state["devices"]
+        effects_changed = "effects" in values and values["effects"] != self._state["effects"]
+        candidates_changed = ("enrollmentCandidates" in values
+                              and values["enrollmentCandidates"] != self._state["enrollmentCandidates"])
         for key, value in values.items():
             if self._state[key] != value:
                 self._state[key] = value
                 changed = True
         if changed:
             self.stateChanged.emit()
+        if inventory_changed:
+            self.inventoryChanged.emit()
+        if candidates_changed:
+            self.candidatesChanged.emit()
+        if effects_changed:
+            self.effectsChanged.emit()
 
     def _diagnostics(self) -> str:
         data = {
             "socket": self._socket_path,
             "connection": self._state["connectionState"],
+            "daemon": {"state": self._state["serviceState"],
+                       "error": self._state["serviceError"]},
             "generation": self._state["generation"],
             "device": self._state["device"],
             "last_failure": self._state["lastFailure"],
@@ -242,6 +283,13 @@ class SphereBackend(QObject):
         self._put(errorMessage=message, errorDetails=error.get("details") or {})
 
     def _enqueue(self, request: _Request) -> None:
+        if request.method in {"status", "control", "lighting", "vendor.read",
+                              "effect.get", "effect.activate", "effect.select",
+                              "countdown.get", "countdown.set", "countdown.cancel"}:
+            target = self._state["device"]
+            if target:
+                request.target = target
+                request.params = {**request.params, "device": target}
         self._queue.append(request)
         self._pump()
 
@@ -280,18 +328,18 @@ class SphereBackend(QObject):
             return
         self._buffer.extend(socket.readAll().data())
         if len(self._buffer) > MAX_RESPONSE_BYTES:
-            self._finish(None, {"code": "protocol_error", "message": "Service response is too large"})
+            self._finish(None, {"code": "protocol_error", "message": "Service response is too large"}, service_failure="invalid_response")
             return
         if b"\n" not in self._buffer:
             return
         raw, _, extra = self._buffer.partition(b"\n")
         if extra:
-            self._finish(None, {"code": "protocol_error", "message": "Service sent more than one response"})
+            self._finish(None, {"code": "protocol_error", "message": "Service sent more than one response"}, service_failure="invalid_response")
             return
         try:
             response = json.loads(raw)
         except (UnicodeDecodeError, ValueError):
-            self._finish(None, {"code": "protocol_error", "message": "Service returned invalid JSON"})
+            self._finish(None, {"code": "protocol_error", "message": "Service returned invalid JSON"}, service_failure="invalid_response")
             return
         if (
             not isinstance(response, dict)
@@ -299,30 +347,38 @@ class SphereBackend(QObject):
             or response.get("id") != self._active_id
             or type(response.get("ok")) is not bool
         ):
-            self._finish(None, {"code": "protocol_error", "message": "Service returned an invalid response"})
+            self._finish(None, {"code": "protocol_error", "message": "Service returned an invalid response"}, service_failure="invalid_response")
             return
         if response["ok"]:
             result = response.get("result")
             if not isinstance(result, dict):
-                self._finish(None, {"code": "protocol_error", "message": "Service returned an invalid result"})
+                self._finish(None, {"code": "protocol_error", "message": "Service returned an invalid result"}, service_failure="invalid_response")
             else:
+                self._service_replied()
                 self._finish(result, None)
         else:
             error = response.get("error")
             if not isinstance(error, dict) or not isinstance(error.get("message"), str):
-                error = {"code": "protocol_error", "message": "Service returned an invalid error"}
+                self._finish(None, {"code": "protocol_error", "message": "Service returned an invalid error"}, service_failure="invalid_response")
+                return
+            self._service_replied()
             self._finish(None, error)
+
+    def _service_replied(self) -> None:
+        """A valid API error still proves the daemon itself is reachable."""
+        self._put(serviceAvailable=True, serviceState="ready", serviceError="")
 
     def _on_socket_error(self, _error) -> None:
         socket = self._socket
         if socket is not None and self._active is not None:
-            self._finish(None, {"code": "transport_error", "message": socket.errorString()})
+            self._finish(None, {"code": "transport_error", "message": socket.errorString()}, service_failure="unavailable")
 
     def _on_timeout(self) -> None:
         if self._active is not None:
-            self._finish(None, {"code": "timeout", "message": "Service did not respond in time; the result is uncertain"})
+            self._finish(None, {"code": "timeout", "message": "Service did not respond in time; the result is uncertain"}, service_failure="unresponsive")
 
-    def _finish(self, result: dict | None, error: dict | None) -> None:
+    def _finish(self, result: dict | None, error: dict | None, *,
+                service_failure: str | None = None) -> None:
         request, self._active = self._active, None
         socket, self._socket = self._socket, None
         self._timeout.stop()
@@ -330,6 +386,15 @@ class SphereBackend(QObject):
             socket.abort()
             socket.deleteLater()
         if request is None:
+            return
+        if service_failure:
+            self._put(serviceAvailable=False, serviceState=service_failure,
+                      serviceError=(error or {}).get("message", ""),
+                      connectionState="unavailable", connected=False,
+                      effectActive=False, colorModeActive=False)
+            self._schedule_poll()
+        if request.target is not None and request.target != self._state["device"]:
+            QTimer.singleShot(0, self._pump)
             return
         request.callback(result, error)
         QTimer.singleShot(0, self._pump)
@@ -339,19 +404,147 @@ class SphereBackend(QObject):
         if self._status_due:
             return
         self._status_due = True
-        self._enqueue(_Request("status", {}, self._status_result, timeout_ms=4000))
+        self._enqueue(_Request("device.list", {}, self._inventory_result, timeout_ms=4000))
+
+    def _inventory_result(self, result: dict | None, error: dict | None) -> None:
+        if error is not None:
+            self._status_result(None, error)
+            return
+        entries = [entry for entry in (result or {}).get("devices", [])
+                   if isinstance(entry, dict) and isinstance(entry.get("device"), str)]
+        entries = [{**entry, "name": entry.get("name") or "Unnamed Sphere"}
+                   for entry in entries]
+        self._put(devices=entries, serviceAvailable=True)
+        addresses = {entry["device"] for entry in entries}
+        if self._state["device"] not in addresses:
+            self._select_device(entries[0]["device"] if entries else "")
+        method = "status" if self._state["device"] else "health"
+        self._enqueue(_Request(method, {}, self._status_result, timeout_ms=4000))
+
+    def _select_device(self, address: str) -> None:
+        """Discard old-device displays and unsent reads before selecting another."""
+        self._refresh_generation += 1
+        self._refresh_queued = False
+        self._queue = deque(request for request in self._queue if request.target is None)
+        self._verification = {}
+        self._put(device=address, power=None, lightness=None, temperature=None,
+                  hsl={}, effect={}, effectActive=False, colorModeActive=False,
+                  battery=None, capabilities={}, connected=False,
+                  errorMessage="", errorDetails={})
+
+    @Slot(str)
+    def selectDevice(self, address: str) -> None:
+        if self._state["pending"] or self._state["enrollment"].get("active"):
+            return
+        if address == self._state["device"]:
+            return
+        if not any(entry["device"] == address for entry in self._state["devices"]):
+            return
+        self._select_device(address)
+        # A superseded poll callback may be discarded after a selection.
+        self._status_due = False
+        self._poll_status()
+
+    @Slot()
+    def refreshDevices(self) -> None:
+        self._poll_status()
+        self._poll_enrollment()
+
+    def _accept_enrollment(self, result: dict) -> None:
+        was_active = self._state["enrollment"].get("active")
+        self._put(enrollment=result, serviceAvailable=True,
+                  enrollmentCandidates=result.get("candidates", []))
+        if result.get("active"):
+            self._refresh_generation += 1
+            self._refresh_queued = False
+            self._queue = deque(request for request in self._queue if request.target is None)
+            self._status_due = False
+            self._put(connected=False, effectActive=False, colorModeActive=False)
+            self._management_poll.start(1000)
+        elif was_active:
+            self._management_poll.stop()
+            self._poll_status()
+
+    def _poll_enrollment(self) -> None:
+        if self._management_status_due:
+            return
+        self._management_status_due = True
+
+        def done(result, error):
+            self._management_status_due = False
+            if result is not None:
+                self._accept_enrollment(result)
+            elif error is not None:
+                self._put(managementError=error.get("message", "Cannot read enrollment status"))
+                if self._state["enrollment"].get("active"):
+                    self._management_poll.start(2000)
+
+        self._enqueue(_Request("enrollment.status", {}, done, timeout_ms=4000))
+
+    def _manage(self, method: str, params: dict, *, enrollment_result=False) -> None:
+        if self._state["managementPending"] or self._state["pending"]:
+            return
+        self._put(managementPending=True, managementError="")
+
+        def done(result, error):
+            self._put(managementPending=False)
+            if error is not None:
+                self._put(managementError=error.get("message", "Sphere management failed"))
+            elif result is not None and enrollment_result:
+                self._accept_enrollment(result)
+            if self._stop_enrollment_requested:
+                self._stop_enrollment_requested = False
+                self.stopEnrollment()
+            self._poll_status()
+            # Completed stop/start/name calls already carry a progress snapshot.
+            if not enrollment_result or error is not None:
+                self._poll_enrollment()
+
+        self._enqueue(_Request(method, params, done, timeout_ms=180000
+                               if method == "enrollment.stop" else 15000))
+
+    @Slot()
+    def startEnrollment(self) -> None:
+        self._manage("enrollment.start", {"duration": 120, "require_names": False},
+                     enrollment_result=True)
+
+    @Slot()
+    def stopEnrollment(self) -> None:
+        if self._state["managementPending"]:
+            self._stop_enrollment_requested = True
+            return
+        if self._state["enrollment"].get("active"):
+            self._manage("enrollment.stop", {}, enrollment_result=True)
+
+    @Slot(str, str)
+    def nameCandidate(self, candidate: str, name: str) -> None:
+        if name.strip():
+            self._manage("enrollment.name", {"candidate": candidate, "name": name.strip()},
+                         enrollment_result=True)
+
+    @Slot(str, str)
+    def renameDevice(self, address: str, name: str) -> None:
+        if name.strip():
+            self._manage("device.rename", {"device": address, "name": name.strip()})
+
+    @Slot(str)
+    def forgetDevice(self, address: str) -> None:
+        self._manage("device.forget", {"device": address})
 
     def _status_result(self, result: dict | None, error: dict | None) -> None:
         self._status_due = False
         if error is not None:
-            self._put(connectionState="unavailable", connected=False,
+            # Only socket/protocol failures make the daemon unavailable.
+            # A valid API failure may describe Bluetooth or device state.
+            self._put(connectionState="reconnecting" if self._state["serviceAvailable"] else "unavailable", connected=False,
                       effectActive=False, colorModeActive=False)
             if self._state["pending"]:
                 self._error(error, action=self._state["pendingAction"])
             self._schedule_poll()
             return
         assert result is not None
-        connected = result.get("connected") is True
+        connected = (result.get("connected") is True and bool(self._state["device"])
+                     and not self._state["enrollment"].get("active"))
         generation = result.get("generation", 0)
         if type(generation) is not int:
             generation = 0
@@ -372,8 +565,8 @@ class SphereBackend(QObject):
         self._put(
             connectionState="connected" if connected else "reconnecting",
             connected=connected,
+            serviceAvailable=True,
             generation=generation,
-            device=str(result.get("device") or ""),
             lastFailure=str(result.get("last_failure") or ""),
             capabilities=self._flatten_capabilities(result.get("capabilities")),
         )
@@ -466,7 +659,10 @@ class SphereBackend(QObject):
         elif field == "temperature" and isinstance(state, dict):
             self._put(temperature=state.get("present"))
         elif field == "hsl" and isinstance(state, dict):
-            self._put(hsl=state)
+            values = {"hsl": state}
+            if type(state.get("lightness")) is int:
+                values["lightness"] = state["lightness"]
+            self._put(**values)
         elif field == "effects":
             effects = result.get("effects", [])
             if isinstance(effects, list):
@@ -526,9 +722,28 @@ class SphereBackend(QObject):
                 if field in ("hsl", "lightness"):
                     self._put(effectActive=False, colorModeActive=False)
                 self._put(pending=False, pendingAction="")
-                self.refresh()
+                self._refresh_field(field)
 
         self._enqueue(_Request(method, params, done, timeout_ms=timeout_ms))
+
+    def _refresh_field(self, field: str) -> None:
+        """Read back the changed state without queuing an unrelated full scan."""
+        if not self._state["connected"]:
+            return
+        if field == "power":
+            method, params = "control", {"command": "read"}
+        elif field in ("lightness", "temperature", "hsl"):
+            method, params = "lighting", {"command": field}
+        else:
+            return
+
+        def done(result, error):
+            if result is not None:
+                self._accept(field, result)
+            elif error is not None:
+                self._error(error, action=f"Reading {field}")
+
+        self._enqueue(_Request(method, params, done))
 
     def _read_effect(
         self,
@@ -602,7 +817,7 @@ class SphereBackend(QObject):
                 if not preserve_mode:
                     self._put(effectActive=False, colorModeActive=False)
             self._put(pending=False, pendingAction="")
-            self.refresh()
+            self._refresh_field("hsl")
 
         self._enqueue(_Request(
             "lighting", {"command": f"hsl={lightness},{hue},{saturation}"},
@@ -657,7 +872,7 @@ class SphereBackend(QObject):
                 assert result is not None
                 self._accept("hsl", result)
             self._read_effect(finish_pending=True, preserve_error=True)
-            self.refresh()
+            self._refresh_field("hsl")
 
         def mode_done(result: dict | None, error: dict | None) -> None:
             if error is not None:
@@ -689,6 +904,7 @@ class SphereBackend(QObject):
 
     def close(self) -> None:
         self._poll.stop()
+        self._management_poll.stop()
         self._timeout.stop()
         self._queue.clear()
         if self._socket is not None:

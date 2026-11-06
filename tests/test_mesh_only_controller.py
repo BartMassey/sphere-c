@@ -22,6 +22,7 @@ def handoff(tmp_path, monkeypatch):
     override = tmp_path / "run" / "bluetooth-mesh.service.d" / "test.conf"
     monkeypatch.setattr(module, "STATE", state)
     monkeypatch.setattr(module, "OVERRIDE", override)
+    monkeypatch.setattr(module, "PERSISTENT_OVERRIDE", tmp_path / "persistent.conf")
     monkeypatch.delenv("SUDO_UID", raising=False)
     calls = []
     indices = {"motherboard": 7, "usb": 0}
@@ -120,4 +121,11 @@ def test_restore_refuses_changed_override(handoff, monkeypatch):
     with pytest.raises(RuntimeError, match="override changed"):
         invoke(monkeypatch, "restore")
     assert handoff.override.read_text() == "changed\n"
+    assert handoff.calls == []
+
+
+def test_legacy_restore_cannot_override_persistent_controller_setup(handoff):
+    module.PERSISTENT_OVERRIDE.write_text('managed persistent setup')
+    with pytest.raises(RuntimeError, match='mesh-controller release'):
+        module.restore({})
     assert handoff.calls == []

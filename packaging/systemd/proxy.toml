@@ -1,0 +1,6 @@
+# Ordinary BlueZ GATT Proxy connection.
+mode = "proxy"
+# Prefer a stable hardware address to an hci index.
+# adapter = "AA:BB:CC:DD:EE:FF"
+experimental_enrollment = false
+verbose = false

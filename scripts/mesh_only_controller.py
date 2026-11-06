@@ -18,6 +18,7 @@ STATE = ROOT / "state/mb-mesh-controller-test.json"
 OVERRIDE = Path("/run/systemd/system/bluetooth-mesh.service.d/sphere-controller-test.conf")
 ADDRESS = "F8:AC:65:82:08:83"
 SERVICE = "bluetooth-mesh.service"
+PERSISTENT_OVERRIDE = Path("/etc/systemd/system/bluetooth-mesh.service.d/10-sphere-controller.conf")
 
 
 def run(*args, check=True):
@@ -55,6 +56,8 @@ def controller(address=ADDRESS):
 
 
 def restore(state):
+    if PERSISTENT_OVERRIDE.exists():
+        raise RuntimeError("Persistent Mesh setup is installed; use sphere-bt mesh-controller release")
     address = mac_address(state.get("address", ADDRESS))
     expected = state["override"]
     if OVERRIDE.exists() and OVERRIDE.read_text() != expected:

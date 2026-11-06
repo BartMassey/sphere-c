@@ -11,10 +11,12 @@ from contextlib import nullcontext
 from copy import deepcopy
 import logging
 import math
+import re
 import sys
 from types import SimpleNamespace
 
 from btmesh.crypto import k3
+from btmesh.bearer import BearerError
 
 from .provision import configure, provision
 from .transport import (
@@ -74,6 +76,27 @@ async def inspect_candidate(transport, beacon) -> dict | None:
         await disconnect_quietly(client)
 
 
+def validate_name(name, devices, *, uuid=None, address=None, reserved=()):
+    """Normalize a unique, unambiguous public device name."""
+    if not isinstance(name, str) or not 1 <= len(name.strip()) <= 64:
+        raise ValueError("name must contain 1..64 characters")
+    name = name.strip()
+    if re.fullmatch(r"0[xX][0-9a-fA-F]+", name):
+        raise ValueError("name must not be an address")
+    folded = name.casefold()
+    for entry in devices.values():
+        if entry.get("superseded_by") or entry.get("forgotten"):
+            continue
+        if ((uuid and entry.get("uuid") == uuid) or
+                (address and entry.get("address", "").lower() == address.lower())):
+            continue
+        if str(entry.get("name", "")).strip().casefold() == folded:
+            raise ValueError("Device name already exists")
+    if any(other.strip().casefold() == folded for other in reserved):
+        raise ValueError("Device name already exists")
+    return name
+
+
 class EnrollmentManager:
     """Commission batches using the daemon's existing locked state store.
 
@@ -98,6 +121,12 @@ class EnrollmentManager:
         self._results: list[dict] = []
         self._errors: list[dict] = []
         self._rejected: set[str] = set()
+        self._completed: set[str] = set()
+        self._require_names = False
+        self._candidates: dict[str, dict] = {}
+        self._wake = asyncio.Event()
+        self._candidate_attempts: dict[str, int] = {}
+        self._candidate_retry_at: dict[str, float] = {}
         self._retry_at: dict[int, float] = {}
         self._retry_count: dict[int, int] = {}
 
@@ -114,10 +143,16 @@ class EnrollmentManager:
         remaining = max(0, self._deadline - self._now()) if active else 0
         return {"active": active, "phase": self._phase,
                 "remaining_seconds": round(remaining, 1),
-                "devices": deepcopy(self._results), "errors": deepcopy(self._errors)}
+                "devices": deepcopy(self._results), "errors": deepcopy(self._errors),
+                "require_names": self._require_names,
+                "candidates": [{"candidate": key, "name": item["name"],
+                                "state": item["state"], "existing_device": item.get("existing_device")}
+                               for key, item in self._candidates.items()]}
 
-    def start(self, duration: float = 120) -> dict:
+    def start(self, duration: float = 120, require_names: bool = False) -> dict:
         """Enable an enrollment window, without asking per-device questions."""
+        if not isinstance(require_names, bool):
+            raise ValueError("require_names must be a boolean")
         if isinstance(duration, bool) or not isinstance(duration, (int, float)):
             raise ValueError("duration must be a number of seconds")
         if not math.isfinite(duration) or not 1 <= duration <= 3600:
@@ -129,15 +164,47 @@ class EnrollmentManager:
         self._results = []
         self._errors = []
         self._rejected = set()
+        self._completed = set()
+        self._require_names = require_names
+        self._candidates = {}
+        self._wake.clear()
+        self._candidate_attempts = {}
+        self._candidate_retry_at = {}
         self._phase = "scanning"
         self._task = asyncio.create_task(self._run())
+        return self.status()
+
+    def name(self, candidate: str, name: str) -> dict:
+        """Reserve a name and queue exactly one inspected candidate."""
+        if not self._window_open() or not self._require_names or self._task is None or self._task.done():
+            raise ValueError("named enrollment is not active")
+        if not isinstance(candidate, str) or candidate not in self._candidates:
+            raise ValueError("unknown candidate")
+        item = self._candidates[candidate]
+        if any(entry.get("enrollment_pending") and not entry.get("superseded_by")
+               and not entry.get("forgotten") and
+               (entry.get("uuid") == candidate or entry.get("address", "").lower() ==
+                item["beacon"].device.address.lower()) for entry in self.state["devices"].values()):
+            raise ValueError("candidate has pending recovery")
+        if item["state"] not in ("awaiting_name", "failed"):
+            raise ValueError("candidate is already queued or provisioned")
+        name = validate_name(name, self.state["devices"], uuid=candidate,
+                             address=item["beacon"].device.address,
+                             reserved=[other["name"] for key, other in self._candidates.items()
+                                       if key != candidate and other["state"] in ("queued", "provisioning")])
+        item.update(name=name, state="queued")
+        self._wake.set()
         return self.status()
 
     async def stop(self) -> dict:
         """Stop discovery and await any already-started commissioning."""
         self._stop.set()
+        self._wake.set()
         if self._task is not None:
             await asyncio.shield(self._task)
+        for item in self._candidates.values():
+            if item["state"] == "queued":
+                item["state"] = "awaiting_name"
         return self.status()
 
     async def close(self) -> None:
@@ -170,7 +237,9 @@ class EnrollmentManager:
             "address": beacon.device.address, "element_count": count,
             "enrollment_pending": True, "provisioning_complete": False,
             "official_config_complete": False,
-            "name": self._name(beacon),
+            "name": (self._candidates[beacon.uuid.hex()]["name"]
+                     if beacon.uuid.hex() in self._candidates
+                     else self._name(beacon)),
         }
         self.state["next_unicast"] = address + count
         self.store.save(self.state)
@@ -178,13 +247,14 @@ class EnrollmentManager:
     def _name(self, beacon) -> str:
         previous = [entry for entry in self.state["devices"].values()
                     if entry.get("address", "").lower() == beacon.device.address.lower()
-                    and entry.get("name") and not entry.get("superseded_by")]
+                    and entry.get("name") and not entry.get("superseded_by")
+                    and not entry.get("forgotten")]
         if previous:
             return previous[-1]["name"]
         base = "Sphere " + beacon.device.address.replace(":", "")[-6:].upper()
-        names = {entry.get("name") for entry in self.state["devices"].values()}
+        names = {str(entry.get("name", "")).casefold() for entry in self.state["devices"].values()}
         name, suffix = base, 2
-        while name in names:
+        while name.casefold() in names:
             name = f"{base} {suffix}"
             suffix += 1
         return name
@@ -290,7 +360,70 @@ class EnrollmentManager:
         except Exception as exc:
             self._error(None, exc)
         finally:
+            for item in self._candidates.values():
+                if item["state"] == "queued":
+                    item["state"] = "awaiting_name"
             self._phase = "idle"
+
+    async def _commission_with_scan(self, identity: str, item: dict) -> bool:
+        """Refresh the BLE object and keep discovery alive through GATT handoff.
+
+        A retry (or a legacy naming pause) can outlive the original scan.
+        BlueZ may remove its device object when discovery stops; reuse of
+        that BLEDevice then fails before provisioning begins.
+        """
+        scanner = self.transport.scanner()
+        completed = False
+        try:
+            beacons = await scan_unprovisioned(
+                scanner, timeout=min(10, max(0, self._deadline - self._now())),
+                stop_on=bytes.fromhex(identity), stop_after=False,
+            )
+            if not self._window_open():
+                item["state"] = "awaiting_name"
+                return False
+            previous_address = item["beacon"].device.address.lower()
+            fresh = next((beacon for beacon in beacons
+                          if beacon.uuid.hex() == identity
+                          and beacon.device.address.lower() == previous_address), None)
+            if fresh is None:
+                raise BearerError("named Sphere is no longer advertising for provisioning")
+            item["beacon"] = fresh
+            await self._commission(fresh, item["details"])
+            completed = True
+            return True
+        finally:
+            original_error = sys.exception()
+            try:
+                await scanner.stop()
+            except Exception as exc:
+                if not completed and original_error is None:
+                    raise
+                logger.warning("enrollment scanner cleanup failed (%s)", type(exc).__name__)
+
+    def _candidate_failed(self, identity: str, item: dict, exc: Exception) -> None:
+        """Retry bounded pre-Data failures; preserve committed recovery instead."""
+        pending = any(
+            entry.get("enrollment_pending") and not entry.get("superseded_by")
+            and not entry.get("forgotten")
+            and (entry.get("uuid") == identity or
+                 entry.get("address", "").lower() == item["beacon"].device.address.lower())
+            for entry in self.state["devices"].values()
+        )
+        if pending:
+            item["state"] = "recovering"
+        elif not self._require_names and self._candidate_attempts.get(identity, 0) < 3:
+            item["state"] = "retrying"
+            self._candidate_retry_at[identity] = self._now() + 3
+        else:
+            item["state"] = "failed"
+        self._error(item["beacon"].device.address, exc)
+
+    def _candidate_complete(self, identity: str, item: dict) -> None:
+        self._completed.add(identity)
+        item["state"] = "complete"
+        self._errors = [error for error in self._errors
+                        if error["address"] != item["beacon"].device.address]
 
     async def _run_passes(self) -> None:
         try:
@@ -299,7 +432,8 @@ class EnrollmentManager:
                     # Retry a previously interrupted configuration before
                     # allocating a new address. Saved DeviceKeys are retained.
                     pending = [(int(key, 16), entry) for key, entry in self.state["devices"].items()
-                               if entry.get("enrollment_pending") and not entry.get("superseded_by")]
+                               if entry.get("enrollment_pending") and not entry.get("superseded_by")
+                               and not entry.get("forgotten")]
                     for address, entry in pending:
                         if not self._window_open():
                             break
@@ -308,6 +442,12 @@ class EnrollmentManager:
                         self._phase = "configuring"
                         try:
                             await self._configure(address)
+                            self._errors = [error for error in self._errors
+                                            if error["address"] != entry.get("address")]
+                            if entry.get("uuid"):
+                                self._completed.add(entry["uuid"])
+                                if entry["uuid"] in self._candidates:
+                                    self._candidates[entry["uuid"]]["state"] = "complete"
                             self._retry_at.pop(address, None)
                             self._retry_count.pop(address, None)
                         except Exception as exc:
@@ -322,6 +462,24 @@ class EnrollmentManager:
                         break
                     if not self._window_open():
                         break
+                    for identity, item in self._candidates.items():
+                        if not self._window_open():
+                            break
+                        if item["state"] not in ("queued", "retrying"):
+                            continue
+                        if self._candidate_retry_at.get(identity, 0) > self._now():
+                            continue
+                        item["state"] = "provisioning"
+                        self._phase = "provisioning"
+                        self._candidate_attempts[identity] = self._candidate_attempts.get(identity, 0) + 1
+                        try:
+                            if not await self._commission_with_scan(identity, item):
+                                continue
+                            self._candidate_complete(identity, item)
+                        except Exception as exc:
+                            self._candidate_failed(identity, item, exc)
+                    if not self._window_open():
+                        break
                     self._phase = "scanning"
                     scanner = self.transport.scanner()
                     try:
@@ -333,7 +491,9 @@ class EnrollmentManager:
                             if not self._window_open():
                                 break
                             identity = beacon.uuid.hex()
-                            if identity in self._rejected or not sphere_uuid(beacon.uuid):
+                            if (identity in self._rejected or identity in self._completed
+                                    or identity in self._candidates
+                                    or not sphere_uuid(beacon.uuid)):
                                 continue
                             # A Data PDU may have reached the lamp even when
                             # Complete was lost. Preserve its reserved address
@@ -353,8 +513,29 @@ class EnrollmentManager:
                                     continue
                                 if not self._window_open():
                                     break
+                                if self._require_names:
+                                    existing = next(((key, entry) for key, entry in self.state["devices"].items()
+                                                     if not entry.get("superseded_by") and not entry.get("forgotten")
+                                                     and (entry.get("uuid") == identity or
+                                                          entry.get("address", "").lower() == beacon.device.address.lower())), None)
+                                    self._candidates[identity] = {"beacon": beacon, "details": details,
+                                                                  "name": existing[1].get("name", "") if existing else "",
+                                                                  "existing_device": existing[0] if existing else None,
+                                                                  "state": "awaiting_name"}
+                                    continue
                                 self._phase = "provisioning"
-                                await self._commission(beacon, details)
+                                item = {"beacon": beacon, "details": details,
+                                        "name": self._name(beacon), "existing_device": None,
+                                        "state": "provisioning"}
+                                self._candidates[identity] = item
+                                self._candidate_attempts[identity] = 1
+                                try:
+                                    # The discovery scanner is still active:
+                                    # no human naming pause interrupts GATT.
+                                    await self._commission(beacon, details)
+                                    self._candidate_complete(identity, item)
+                                except Exception as exc:
+                                    self._candidate_failed(identity, item, exc)
                             except Exception as exc:
                                 self._error(beacon.device.address, exc)
                     finally:
@@ -364,12 +545,15 @@ class EnrollmentManager:
                 # them paused until enrollment ends.
                 if not self._window_open():
                     break
+                waiters = [asyncio.create_task(event.wait()) for event in (self._stop, self._wake)]
                 try:
-                    await asyncio.wait_for(
-                        self._stop.wait(), timeout=min(2, self._deadline - self._now())
-                    )
-                except TimeoutError:
-                    pass
+                    await asyncio.wait(waiters, timeout=min(2, self._deadline - self._now()),
+                                       return_when=asyncio.FIRST_COMPLETED)
+                finally:
+                    for waiter in waiters:
+                        waiter.cancel()
+                    await asyncio.gather(*waiters, return_exceptions=True)
+                    self._wake.clear()
         except Exception as exc:
             self._error(None, exc)
         finally:
