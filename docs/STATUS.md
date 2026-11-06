@@ -1,6 +1,6 @@
 # Spherosphere status
 
-Updated 2026-11-06. Source version **0.2.0**.
+Updated 2026-11-06. Source version **0.2.1**.
 This file is the current public handoff. Private research notes
 and original history are retained separately from public Git.
 
@@ -21,6 +21,8 @@ and original history are retained separately from public Git.
   paths independent of the source directory.
 - GATT Proxy and native BlueZ Mesh transports. Dedicated Mesh
   plus a separate ordinary USB adapter is live-validated.
+- Standalone DeviceKey composition inspection and authenticated
+  GATT Proxy filter-status logging for diagnostics.
 
 The public starting point is the [user README](../README.md).
 The [technical report](TECH.md) covers profiles, CLI tools,
@@ -32,7 +34,7 @@ working notes are not required to understand these documents.
 
 ## Host installation and last live checkpoint
 
-Checkout: `/home/bart/stuff/misc/spherosphere`.
+Checkout: `/usr/local/src/spherosphere`.
 Repository: `BartMassey/spherosphere`.
 The Python package is `spherosphere`; primary commands are
 `spherosphere` and `spherosphered`. Maintenance/research entry
@@ -224,6 +226,10 @@ must not reuse Sphere C assumptions. Earlier completed
 investigations are historical, not a replacement for this list.
 
 ## Validation and continuation rules
+
+The 0.2.1 source passed **501 tests**, including composition
+inspection and encrypted proxy-status regression coverage.
+No new live hardware validation was performed for these changes.
 
 The 0.2.0 checkpoint passed **487 tests**. Its wheel metadata,
 renamed desktop/service assets, and artifact exclusions were

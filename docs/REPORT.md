@@ -1,6 +1,6 @@
 # Spherosphere: from encrypted traffic to a local controller
 
-Bart Massey and Codex. Updated November 6, 2026, for version 0.2.0.
+Bart Massey and Codex. Updated November 6, 2026, for version 0.2.1.
 
 Spherosphere now controls multiple Olight Sphere C lights from
 Linux without the Olight app or cloud. A daemon owns the local
@@ -321,7 +321,7 @@ The next priorities are now, in order:
 3. Modify firmware to support uploading and playing custom
    scenes and animations, with matching software support.
 
-These are future capabilities, not features of version 0.2.0.
+These are future capabilities, not features of version 0.2.1.
 Music has a traced firmware handler but still needs live
 behavioral validation. The daemon currently exposes a private
 Unix API, not an Internet REST service. Custom content has an

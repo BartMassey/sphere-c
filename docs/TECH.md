@@ -1,6 +1,6 @@
 # Spherosphere technical report
 
-Implementation report for version **0.2.0**, updated 2026-11-06.
+Implementation report for version **0.2.1**, updated 2026-11-06.
 
 This report describes the current software architecture, device
 protocol, firmware findings, state ownership, operational modes,
@@ -720,7 +720,7 @@ python3 -m venv .venv
 ./.venv/bin/pytest -q
 ```
 
-The 0.2.0 checkpoint passed 487 tests. GUI/local-API tests need
+The 0.2.1 source passed 501 tests. GUI/local-API tests need
 permission to create temporary Unix sockets. A restricted
 sandbox can reject socket creation without a source regression.
 Unit and simulated tests do not replace live radio validation.
