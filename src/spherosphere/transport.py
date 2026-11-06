@@ -25,7 +25,13 @@ from btmesh.bearer import (
 )
 from btmesh.crypto import aes_ecb, k1, s1
 from btmesh.node import MeshNode
-from btmesh.proxy_config import FILTER_ACCEPT_LIST, add_addresses, set_filter_type
+from btmesh.proxy_config import (
+    FILTER_ACCEPT_LIST,
+    ProxyConfigError,
+    add_addresses,
+    parse_filter_status,
+    set_filter_type,
+)
 from btmesh.proxy_pdu import MSG_TYPE_NETWORK_PDU, MSG_TYPE_PROXY_CONFIG
 from btmesh.pump import BearerPump
 
@@ -495,6 +501,21 @@ async def open_mesh_proxy_session(
         def on_message(msg_type: int, payload: bytes) -> None:
             if msg_type == MSG_TYPE_NETWORK_PDU:
                 node.handle_network_pdu(payload)
+            elif msg_type == MSG_TYPE_PROXY_CONFIG:
+                # The bearer only removes SAR framing; network protection
+                # must be verified before interpreting the status bytes.
+                message = node.parse_proxy_config_pdu(payload)
+                if message is None:
+                    return
+                try:
+                    status = parse_filter_status(message)
+                except ProxyConfigError as exc:
+                    logger.debug("ignoring proxy configuration message: %s", exc)
+                    return
+                logger.info(
+                    "Proxy Filter Status: type=0x%02x list_size=%d",
+                    status.filter_type, status.list_size,
+                )
             else:
                 logger.debug(
                     "ignoring proxy message type 0x%02x: %s",

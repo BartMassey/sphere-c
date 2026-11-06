@@ -597,6 +597,12 @@ errors. Daemon tracing redacts keys, raw vendor bytes and invalid
 parameters. Direct harness frame dumps and radio traces have
 different exposure: review those artifacts before sharing.
 
+The GATT Proxy transport logs authenticated Proxy Filter Status
+replies at INFO level, including filter type and address count.
+Malformed or unrelated replies are ignored; these diagnostics
+do not gate the connection. Native BlueZ Mesh mode manages its
+own transport and does not use this GATT logging path.
+
 The socket has mode `0600`. The daemon refuses to replace a
 regular file at its path. It removes a stale socket only after
 confirming that no service is listening. State-lock failures

@@ -252,6 +252,56 @@ class FakeProxyBearer:
         self.sent.append((msg_type, payload))
 
 
+@pytest.mark.parametrize("message,foreign_key,raw,expected", [
+    (bytes([3, 0, 0, 2]), False, False, "type=0x00 list_size=2"),
+    (bytes([3, 1, 1, 0]), False, False, "type=0x01 list_size=256"),
+    (bytes([3, 0]), False, False, None),
+    (bytes([4, 0, 0, 2]), False, False, None),
+    (bytes([3, 0, 0, 2]), True, False, None),
+    (bytes([3, 0, 0, 2]), False, True, None),
+])
+async def test_proxy_status_logging_requires_authenticated_network_envelope(
+    monkeypatch, caplog, message, foreign_key, raw, expected,
+):
+    from btmesh.node import MeshNode
+
+    client = FakeClient()
+    bearer = FakeProxyBearer()
+    open_session = AsyncMock(return_value=(client, bearer))
+    monkeypatch.setattr(sphere_transport, "open_gatt_session", open_session)
+    session = await sphere_transport.open_mesh_proxy_session(
+        object(), "device", netkey=bytes(16), appkey=bytes([1]) * 16,
+        device_key=bytes([2]) * 16, iv_index=0, provisioner_addr=1,
+        unicast=0x0100, seq=10, persist_seq=lambda _: None,
+    )
+    peer = MeshNode(
+        netkey=bytes([3 if foreign_key else 0]) * 16,
+        appkey=bytes([1]) * 16, iv_index=0, src_addr=0x0100,
+        send_network_pdu=lambda _: None,
+    )
+    try:
+        callback = open_session.await_args.kwargs["on_message"]
+        payload = message if raw else peer.build_proxy_config_pdu(message)
+        if not raw:
+            assert len(payload) > 4
+        session.node.handle_network_pdu = Mock()
+        caplog.set_level("INFO", logger="spherosphere-transport")
+
+        callback(sphere_transport.MSG_TYPE_PROXY_CONFIG, payload)
+
+        status_logs = [record.getMessage() for record in caplog.records
+                       if "Proxy Filter Status:" in record.getMessage()]
+        if expected is None:
+            assert status_logs == []
+        else:
+            assert status_logs == [f"Proxy Filter Status: {expected}"]
+        session.node.handle_network_pdu.assert_not_called()
+        assert session.failure is None
+    finally:
+        peer.close()
+        await session.close()
+
+
 async def test_mesh_proxy_session_persists_seq_and_closes_once(monkeypatch):
     client = FakeClient()
     bearer = FakeProxyBearer()
