@@ -172,6 +172,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="configure and inspect the node, but do not change the light state",
     )
     parser.add_argument(
+        "--probe-composition", action="store_true",
+        help="read a saved node's Composition Data with its DeviceKey; "
+        "skip provisioning, AppKey setup, model binding, and light control",
+    )
+    parser.add_argument(
         "--reset-node", action="store_true",
         help="send a device-keyed Config Node Reset and perform no other action",
     )
@@ -210,6 +215,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         args.provision_only,
         args.toggle_only,
         args.reset_node,
+        args.probe_composition,
         args.control is not None,
         args.lighting is not None,
     )
@@ -501,11 +507,11 @@ async def provision(
 
 
 def pick_device(state: dict, args) -> int:
-    """--toggle-only: select a previously provisioned device from the state."""
+    """Select a saved device for inspection, control, or reset."""
     if not state["devices"]:
         raise Phase0Failure(
             "startup",
-            "--toggle-only, but the state file has no provisioned device",
+            "the state file has no provisioned device to reuse",
             ["run once without --toggle-only to provision first"],
         )
     if args.device_uuid:
@@ -590,6 +596,28 @@ async def _find_proxy_target(state: dict, transport, unicast: int):
             + ("; ".join(seen) if seen else "none at all"),
         ],
     )
+
+
+async def inspect_composition(node: MeshNode, unicast: int, pump: BearerPump) -> None:
+    """Inspect a saved node without configuring its application models.
+
+    A timeout is inconclusive: the Composition Data reply may require
+    segmented transport even though the request fits in one segment.
+    Normal session sequence persistence still applies.
+    """
+    print("Inspect: Composition Data Get (page 0, DeviceKey)...")
+    try:
+        reply = await node.request(
+            unicast, config_composition_data_get(0),
+            OP_CONFIG_COMPOSITION_DATA_STATUS,
+            dev_key=True, timeout=15, retries=1,
+        )
+    except TimeoutError as exc:
+        raise Phase0Failure(
+            "inspect Composition Data", str(exc), _timeout_causes(pump)
+        ) from exc
+    composition = parse_composition_data_status(_full_payload(reply))
+    print(f"  authenticated composition: {composition.describe()}")
 
 
 async def configure(
@@ -848,7 +876,7 @@ async def read_control_state(
 async def mesh_session(
     args, state: dict, store: StateStore, transport, unicast: int
 ) -> None:
-    """Connect the proxy, configure (unless --toggle-only), toggle. Milestone B."""
+    """Connect a saved node and execute the selected inspection/control mode."""
     if args.lighting:
         for command in args.lighting:
             try:
@@ -894,6 +922,9 @@ async def mesh_session(
     pump = session.pump
 
     try:
+        if args.probe_composition:
+            await inspect_composition(node, unicast, pump)
+            return
         if args.reset_node:
             print("Config Node Reset (returning the Sphere to unprovisioned state)...")
             try:
@@ -1056,7 +1087,8 @@ async def async_main(args: argparse.Namespace) -> int:
         return 1
 
     try:
-        if args.toggle_only or args.reset_node or args.control or args.lighting:
+        if (args.toggle_only or args.reset_node or args.probe_composition
+                or args.control or args.lighting):
             unicast = pick_device(state, args)
             print(f"using device 0x{unicast:04x} from {state_path}")
         else:

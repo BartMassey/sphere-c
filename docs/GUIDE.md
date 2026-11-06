@@ -703,6 +703,19 @@ replacement for full configuration. Without `--no-toggle`, the
 ordinary harness workflow may toggle output. Review `--help`
 and target selection before using it on a multi-light network.
 
+Inspect a saved node's model inventory without adding an AppKey,
+binding models, or changing its light:
+
+```sh
+spherosphere-provision --device-uuid DEVICE_UUID --probe-composition
+```
+
+This DeviceKey-authenticated read can diagnose a partially
+configured node. A timeout is inconclusive because the reply
+can require segmented transport. The command still advances
+and persists the controller's sequence state. Stop the daemon
+before using this direct diagnostic with its state file.
+
 A retained Network ID and authenticated reads after disconnect
 and button-off/wake established persistent membership. A
 button-off cycle is not proof of complete power loss because

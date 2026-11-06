@@ -1,6 +1,7 @@
 import json
 import stat
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -54,6 +55,67 @@ def test_run_modes_are_mutually_exclusive(argv):
 def test_local_transport_is_default():
     args = sphere.parse_args(["--init-only"])
     assert args.transport == "local"
+
+
+@pytest.mark.parametrize("other", [
+    ["--init-only"], ["--provision-only"], ["--toggle-only"],
+    ["--reset-node"], ["--control", "read"], ["--lighting", "lightness"],
+])
+def test_composition_probe_excludes_other_run_modes(other):
+    with pytest.raises(SystemExit):
+        sphere.parse_args(["--probe-composition", *other])
+
+
+async def test_composition_probe_uses_saved_node_without_configuration(
+    tmp_path, monkeypatch, capsys,
+):
+    path = tmp_path / "state.json"
+    state = sphere.load_or_create_state(path)
+    state["devices"]["0x0100"] = {
+        "uuid": "00" * 16, "device_key": "11" * 16,
+    }
+    sphere.save_state(path, state)
+    transport = SimpleNamespace(start=AsyncMock(), stop=AsyncMock())
+    monkeypatch.setattr(sphere, "LocalTransport", lambda: transport)
+    scanner = SimpleNamespace(stop=AsyncMock())
+    monkeypatch.setattr(sphere, "_find_proxy_target", AsyncMock(
+        return_value=(SimpleNamespace(address="test-device"), scanner),
+    ))
+    reply = SimpleNamespace(
+        opcode=sphere.OP_CONFIG_COMPOSITION_DATA_STATUS,
+        params=bytes.fromhex("00 d007 0100 0100 0800 0000 0000 01 00 0010"),
+    )
+    node = SimpleNamespace(request=AsyncMock(return_value=reply))
+    session = SimpleNamespace(
+        node=node, pump=SimpleNamespace(failure=None), close=AsyncMock(),
+    )
+    open_session = AsyncMock(return_value=session)
+    monkeypatch.setattr(sphere, "open_mesh_proxy_session", open_session)
+    forbidden = AsyncMock(side_effect=AssertionError("unexpected device mutation"))
+    for name in ("provision", "configure", "toggle_loop", "read_control_state"):
+        monkeypatch.setattr(sphere, name, forbidden)
+    args = sphere.parse_args(["--state", str(path), "--probe-composition"])
+
+    assert await sphere.async_main(args) == 0
+
+    node.request.assert_awaited_once_with(
+        0x0100, sphere.config_composition_data_get(0),
+        sphere.OP_CONFIG_COMPOSITION_DATA_STATUS,
+        dev_key=True, timeout=15, retries=1,
+    )
+    forbidden.assert_not_awaited()
+    session.close.assert_awaited_once()
+    scanner.stop.assert_awaited_once()
+    transport.stop.assert_awaited_once()
+    assert "authenticated composition:" in capsys.readouterr().out
+    assert "control_model" not in json.loads(path.read_text())
+
+
+async def test_composition_probe_reports_timeout_as_diagnostic_failure():
+    node = SimpleNamespace(request=AsyncMock(side_effect=TimeoutError("no reply")))
+    with pytest.raises(sphere.Phase0Failure) as failure:
+        await sphere.inspect_composition(node, 0x0100, SimpleNamespace(failure=None))
+    assert failure.value.phase == "inspect Composition Data"
 
 
 def test_control_commands_can_be_batched():
