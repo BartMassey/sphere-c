@@ -6,9 +6,9 @@ from unittest.mock import Mock
 
 import pytest
 
-from sphere_mesh import user_service as module
-from sphere_mesh.service_config import load_service_config
-from sphere_mesh.state import StateStore, new_state
+from spherosphere import user_service as module
+from spherosphere.service_config import load_service_config
+from spherosphere.state import StateLockedError, StateStore, new_state
 
 
 @pytest.fixture
@@ -20,6 +20,7 @@ def installation(tmp_path, monkeypatch):
     executable.write_text("#!/bin/sh\nexit 0\n")
     executable.chmod(0o755)
     monkeypatch.setattr(module, "user_paths", lambda: (config, state, socket))
+    monkeypatch.setattr(module, "config_path", lambda: config / "spherosphere/daemon.toml")
     monkeypatch.setattr(module.os, "geteuid", lambda: 1000)
     systemctl = Mock(return_value=SimpleNamespace(returncode=3, stdout="", stderr=""))
     monkeypatch.setattr(module, "systemctl", systemctl)
@@ -42,12 +43,12 @@ def test_installs_each_profile_and_keeps_existing_state_in_place(installation, p
         args += ["--adapter", adapter]
     assert module.main(args) == 0
     assert installation.state.read_bytes() == original
-    config = load_service_config(installation.config / "sphere-mesh/daemon.toml")
+    config = load_service_config(installation.config / "spherosphere/daemon.toml")
     assert config["mode"] == mode
     assert config.get("adapter") == adapter
     assert not config["experimental_enrollment"]
-    assert (installation.config / "sphere-mesh/daemon.toml").stat().st_mode & 0o777 == 0o600
-    override = installation.config / "systemd/user/sphere-mesh.service.d/10-install.conf"
+    assert (installation.config / "spherosphere/daemon.toml").stat().st_mode & 0o777 == 0o600
+    override = installation.config / "systemd/user/spherosphere.service.d/10-install.conf"
     text = override.read_text()
     assert "$$dollar" in text and "%%percent" in text
     assert str(installation.state) in text
@@ -62,7 +63,7 @@ def test_live_foreground_owner_must_be_stopped_before_activation(installation):
     with StateStore(installation.state):
         assert module.main(["install", "--profile", "proxy", "--enable-now",
                             "--executable", str(installation.executable)]) == 1
-    assert not (installation.config / "sphere-mesh/daemon.toml").exists()
+    assert not (installation.config / "spherosphere/daemon.toml").exists()
     assert installation.systemctl.call_count == 1
 
 
@@ -94,9 +95,9 @@ def test_installed_assets_are_packaged():
 
     root = Path(__file__).resolve().parents[1]
     metadata = tomllib.loads((root / "pyproject.toml").read_text())
-    assert metadata["project"]["scripts"]["sphere-mesh-service"] == "sphere_mesh.user_service:main"
-    assets = metadata["tool"]["setuptools"]["data-files"]["share/sphere-mesh/systemd"]
-    assert {"packaging/systemd/sphere-mesh.service", "packaging/systemd/proxy.toml",
+    assert metadata["project"]["scripts"]["spherosphere-service"] == "spherosphere.user_service:main"
+    assets = metadata["tool"]["setuptools"]["data-files"]["share/spherosphere/systemd"]
+    assert {"packaging/systemd/spherosphere.service", "packaging/systemd/proxy.toml",
             "packaging/systemd/mesh.toml", "packaging/systemd/split.toml"} <= set(assets)
 
 
@@ -111,6 +112,31 @@ def test_profile_change_reuses_installed_state_socket_and_executable(installatio
                         '--executable', str(installation.executable)]) == 0
     assert module.main(['install', '--profile', 'proxy']) == 0
     assert state.read_bytes() == original
-    override = installation.config / 'systemd/user/sphere-mesh.service.d/10-install.conf'
+    override = installation.config / 'systemd/user/spherosphere.service.d/10-install.conf'
     assert str(state) in override.read_text() and str(socket) in override.read_text()
     assert not installation.state.exists()
+
+
+def test_state_migration_moves_identity_and_sequence_without_a_copy(tmp_path):
+    source, destination = tmp_path / 'legacy/state.json', tmp_path / 'xdg/state.json'
+    with StateStore(source) as store:
+        state = new_state()
+        state['seq'] = 12345
+        store.save(state)
+    original = source.read_bytes()
+    module.move_state(source, destination)
+    assert not source.exists()
+    assert destination.read_bytes() == original
+
+
+def test_state_migration_refuses_live_owner_and_existing_destination(tmp_path):
+    source, destination = tmp_path / 'legacy.json', tmp_path / 'current.json'
+    with StateStore(source) as store:
+        store.save(new_state())
+        with pytest.raises(StateLockedError, match='already locked|in use'):
+            module.move_state(source, destination)
+    destination.write_text('do not replace')
+    with pytest.raises(ValueError, match='already exists'):
+        module.move_state(source, destination)
+    assert destination.read_text() == 'do not replace'
+    assert source.exists()

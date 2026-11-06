@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from spherosphere.paths import state_path
 """Read ARI and BEN through one shared Mesh Proxy connection.
 
 Uses the existing locked controller state and advances its sequence cursor.
@@ -18,9 +19,9 @@ from btmesh.access import (
     parse_generic_onoff_status,
 )
 from btmesh.crypto import k3
-from sphere_mesh.state import StateStore
-from sphere_mesh.bluez_mesh import open_bluez_mesh_session
-from sphere_mesh.transport import (
+from spherosphere.state import StateStore
+from spherosphere.bluez_mesh import open_bluez_mesh_session
+from spherosphere.transport import (
     LocalTransport, find_proxy_node, open_mesh_proxy_session,
 )
 
@@ -116,7 +117,7 @@ async def check(state_path: Path, *, pause_advertising=False, resume_before_read
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--state", type=Path, default=Path("state/sphere_state.json"))
+    parser.add_argument("--state", type=Path, default=state_path())
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--pause-advertising", action="store_true")
     parser.add_argument("--resume-before-read", action="store_true")

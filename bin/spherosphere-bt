@@ -53,7 +53,7 @@ def main():
     # argparse's REMAINDER otherwise rejects a leading option like --device.
     if len(sys.argv) > 1 and sys.argv[1] in ("ctl", "mgmt"):
         if sys.argv[1] == "ctl":
-            run(str(ROOT / "bin/sphere-meshctl"), *sys.argv[2:])
+            run(str(ROOT / "bin/spherospherectl"), *sys.argv[2:])
         else:
             if len(sys.argv) == 2:
                 raise SystemExit("mgmt requires a Bluetooth management command")
@@ -129,9 +129,9 @@ def main():
         for option in ("experimental_enrollment", "verbose"):
             if getattr(args, option):
                 extra.append("--" + option.replace("_", "-"))
-        run(str(ROOT / "bin/sphere-meshd"), *extra)
+        run(str(ROOT / "bin/spherosphered"), *extra)
     elif args.command == "daemon-stop":
-        pattern = "^" + re.escape(str(ROOT / ".venv/bin/python")) + r" -m sphere_mesh\.daemon( |$)"
+        pattern = "^" + re.escape(str(ROOT / ".venv/bin/python")) + r" -m spherosphere\.daemon( |$)"
         found = subprocess.run(["pgrep", "-f", pattern], capture_output=True, text=True)
         if found.returncode not in (0, 1):
             raise SystemExit("Could not identify the project daemon")
@@ -172,7 +172,7 @@ def main():
             "--output", str(ROOT / "state/captures" / (args.name + ".json")),
             "--seconds", str(args.seconds))
     elif args.command == "ctl":
-        run(str(ROOT / "bin/sphere-meshctl"), *args.arguments)
+        run(str(ROOT / "bin/spherospherectl"), *args.arguments)
     elif args.command == "probe":
         if not args.name or Path(args.name).name != args.name or args.name.startswith("."):
             parser.error("probe name must be a simple nonhidden filename")

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from spherosphere.paths import state_path
 """Verify the host Mesh relay and read every current lamp via BlueZ."""
 
 import argparse
@@ -9,8 +10,8 @@ import os
 from pathlib import Path
 
 from btmesh.access import OP_GENERIC_ONOFF_STATUS, generic_onoff_get
-from sphere_mesh.bluez_mesh import open_bluez_mesh_session
-from sphere_mesh.state import StateStore
+from spherosphere.bluez_mesh import open_bluez_mesh_session
+from spherosphere.state import StateStore
 
 
 async def check(path: Path) -> dict:
@@ -49,7 +50,7 @@ async def check(path: Path) -> dict:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--state", type=Path, default=Path("state/sphere_state.json"))
+    parser.add_argument("--state", type=Path, default=state_path())
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if args.output.exists():

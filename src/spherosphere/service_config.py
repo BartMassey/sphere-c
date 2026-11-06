@@ -16,11 +16,16 @@ def load_service_config(path: Path) -> dict:
 
     allowed = {
         "mode", "adapter", "verbose",
-        "experimental_enrollment", "enroll_seconds",
+        "experimental_enrollment", "enroll_seconds", "state", "socket",
     }
     unknown = set(config) - allowed
     if unknown:
         raise ValueError(f"unknown config key(s): {', '.join(sorted(unknown))}")
+    for key in ("state", "socket"):
+        if key in config:
+            if not isinstance(config[key], str) or not Path(config[key]).expanduser().is_absolute():
+                raise ValueError(f"config {key} must be an absolute path")
+            config[key] = Path(config[key]).expanduser()
     if "mode" in config and config["mode"] not in ("proxy", "mesh"):
         raise ValueError("config mode must be 'proxy' or 'mesh'")
     if "adapter" in config:

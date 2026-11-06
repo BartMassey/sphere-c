@@ -4,9 +4,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from sphere_mesh import provision as sphere
+from spherosphere import provision as sphere
 from btmesh.bearer import PROXY_DATA_IN, PROXY_DATA_OUT, PROXY_SERVICE
-from sphere_mesh.transport import GattBearer
+from spherosphere.transport import GattBearer
 
 
 def test_state_is_created_with_private_permissions(tmp_path):

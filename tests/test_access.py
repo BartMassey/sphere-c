@@ -1,7 +1,7 @@
 import pytest
 
 from btmesh.access import AccessError
-from sphere_mesh.access import (
+from spherosphere.access import (
     MODEL_LIGHT_CTL_TEMPERATURE_SERVER,
     MODEL_LIGHT_HSL_SERVER,
     MODEL_LIGHT_XYL_SERVER,

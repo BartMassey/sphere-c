@@ -4,7 +4,7 @@ import argparse
 import re
 from pathlib import Path
 
-from sphere_mesh.capture import k2, k3
+from spherosphere.capture import k2, k3
 
 
 HEX_128 = re.compile(

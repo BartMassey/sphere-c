@@ -31,6 +31,7 @@ from .lighting import (
     parse_lighting_command,
 )
 from .service_config import load_service_config
+from .paths import config_path, state_path, socket_path
 from .state import StateError, StateLockedError, StateStore
 from .transport import (
     LocalTransport,
@@ -50,9 +51,7 @@ from .vendor import (
 )
 
 
-logger = logging.getLogger("sphere-daemon")
-DEFAULT_STATE = Path("state/sphere_state.json")
-DEFAULT_SOCKET = Path("state/sphere.sock")
+logger = logging.getLogger("spherosphere-daemon")
 EFFECT_MODE_SETTLE_SECONDS = 0.25
 PROXY_SCAN_SECONDS = 30.0
 DP_NAMES = {
@@ -1155,7 +1154,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                 "can remain available for ordinary Bluetooth. This command does "
                 "not change controller ownership or system services."),
     )
-    parser.add_argument("--config", type=Path, help="read daemon settings from a TOML file")
+    parser.add_argument("--config", type=Path, help="TOML settings (default: Spherosphere XDG config)")
     parser.add_argument("--state", type=Path)
     parser.add_argument("--socket", type=Path)
     parser.add_argument("--verbose", action=argparse.BooleanOptionalAction, default=None)
@@ -1184,14 +1183,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     args = parser.parse_args(argv)
     try:
-        config = load_service_config(args.config) if args.config else {}
+        selected_config = args.config or config_path()
+        config = load_service_config(selected_config) if args.config or selected_config.exists() else {}
+        default_state = state_path(selected_config)
+        default_socket = socket_path(selected_config)
     except ValueError as exc:
         parser.error(str(exc))
-    for key, default in (("state", DEFAULT_STATE), ("socket", DEFAULT_SOCKET),
+    for key, default in (("state", default_state), ("socket", default_socket),
                          ("adapter", None), ("verbose", False),
                          ("experimental_enrollment", False), ("enroll_seconds", 0)):
         if getattr(args, key) is None:
-            setattr(args, key, config.get(key, default))
+            setattr(args, key, default if key in ("state", "socket") else config.get(key, default))
     args.mode = args.mode or (
         ("mesh" if args.backend == "bluez" else "proxy")
         if args.backend is not None else config.get("mode", "proxy")

@@ -7,9 +7,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from sphere_mesh import enrollment as module
-from sphere_mesh import provision as provisioning
-from sphere_mesh.state import StateStore
+from spherosphere import enrollment as module
+from spherosphere import provision as provisioning
+from spherosphere.state import StateStore
 
 
 def beacon(uuid="dc235212111f50146430647067613068"):

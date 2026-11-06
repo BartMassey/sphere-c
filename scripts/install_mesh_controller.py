@@ -11,12 +11,12 @@ import tempfile
 import time
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-SOURCE = (SCRIPT_DIR / "sphere-mesh-controller" if
+SOURCE = (SCRIPT_DIR / "spherosphere-controller" if
           SCRIPT_DIR.name == "systemd" else
-          SCRIPT_DIR.parent / "packaging/systemd/sphere-mesh-controller")
-LAUNCHER = Path("/usr/local/libexec/sphere-mesh-controller")
-DROPIN = Path("/etc/systemd/system/bluetooth-mesh.service.d/10-sphere-controller.conf")
-LEGACY = Path("/run/systemd/system/bluetooth-mesh.service.d/sphere-controller-test.conf")
+          SCRIPT_DIR.parent / "packaging/systemd/spherosphere-controller")
+LAUNCHER = Path("/usr/local/libexec/spherosphere-controller")
+DROPIN = Path("/etc/systemd/system/bluetooth-mesh.service.d/10-spherosphere-controller.conf")
+LEGACY = Path("/run/systemd/system/bluetooth-mesh.service.d/spherosphere-controller-test.conf")
 SYSTEMCTL = "/usr/bin/systemctl"
 BTMGMT = "/usr/bin/btmgmt"
 SERVICE = "bluetooth-mesh.service"
@@ -24,7 +24,7 @@ MAC = r"[0-9A-F]{2}(?::[0-9A-F]{2}){5}"
 MANAGED = re.compile(
     r"\[Unit\]\nWants=bluetooth\.service\nAfter=bluetooth\.service\n"
     r"\[Service\]\nExecStart=\nExecStart=/usr/local/libexec/"
-    r"sphere-mesh-controller --controller (" + MAC + r")\n"
+    r"spherosphere-controller --controller (" + MAC + r")\n"
     r"(?:ExecStartPre=/usr/bin/sleep 1\nRestart=always\nRestartSec=3\n)?\Z")
 LEGACY_FORMAT = re.compile(
     r"\[Service\]\nExecStart=\nExecStart=/usr/libexec/bluetooth/"
@@ -98,7 +98,7 @@ def wait_for_service(restart_error):
 def contents(address):
     return ("[Unit]\nWants=bluetooth.service\nAfter=bluetooth.service\n"
             "[Service]\nExecStart=\nExecStart=/usr/local/libexec/"
-            f"sphere-mesh-controller --controller {address}\n"
+            f"spherosphere-controller --controller {address}\n"
             "ExecStartPre=/usr/bin/sleep 1\nRestart=always\nRestartSec=3\n")
 
 

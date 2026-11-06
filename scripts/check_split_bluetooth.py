@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from spherosphere.paths import socket_path
 """Verify USB discovery concurrently with motherboard Mesh control."""
 
 import argparse
@@ -12,7 +13,7 @@ import time
 from dbus_fast import Message, Variant
 from dbus_fast.aio import MessageBus
 from dbus_fast.constants import BusType, MessageType
-from sphere_mesh.api import request
+from spherosphere.api import request
 
 
 async def check(address, seconds, record):
@@ -67,7 +68,7 @@ async def check(address, seconds, record):
         result["usb_powered"] = props["Powered"].value
         if not result["usb_powered"]:
             raise RuntimeError("USB controller is not powered")
-        health = await request(Path("state/sphere.sock"), "health")
+        health = await request(socket_path(), "health")
         result["mesh_health_before"] = health
         if not health.get("ok") or not any(
                 link.get("bearer") == "advertising" and link.get("relay")
@@ -93,7 +94,7 @@ async def check(address, seconds, record):
         while time.monotonic() < deadline:
             sample = {}
             for name in ("ARI", "BEN"):
-                reply = await request(Path("state/sphere.sock"), "control",
+                reply = await request(socket_path(), "control",
                                       {"device": name, "command": "read"})
                 if not reply.get("ok"):
                     raise RuntimeError("Mesh status read failed")

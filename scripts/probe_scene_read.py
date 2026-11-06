@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
+from spherosphere.paths import state_path
 """Record read-only vendor response bursts using the existing Mesh node.
 
-Stop sphere-mesh.service first. This takes the normal state lock and
+Stop spherosphere.service first. This takes the normal state lock and
 attaches the existing BlueZ identity; it never copies keys or state.
 No lighting, provisioning, or configuration Set is sent.
 """
@@ -13,14 +14,14 @@ import json
 import os
 from pathlib import Path
 
-from sphere_mesh.bluez_mesh import open_bluez_mesh_session
-from sphere_mesh.state import StateStore
-from sphere_mesh.vendor import tuya_dp_read, vendor_model_element
+from spherosphere.bluez_mesh import open_bluez_mesh_session
+from spherosphere.state import StateStore
+from spherosphere.vendor import tuya_dp_read, vendor_model_element
 
 
 async def probe(output: Path) -> None:
     result = {"utc": datetime.now(timezone.utc).isoformat(), "trials": []}
-    with StateStore(Path("state/sphere_state.json")) as store:
+    with StateStore(state_path()) as store:
         state = store.load_or_create()
         session = await open_bluez_mesh_session(state, store)
         try:

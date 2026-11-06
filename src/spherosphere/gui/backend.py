@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from importlib.resources import files
 from typing import Callable
+from ..paths import socket_path as default_socket_path
 
 try:
     from PySide6.QtCore import QObject, Property, QTimer, QUrl, Signal, Slot
@@ -16,7 +17,7 @@ try:
     from PySide6.QtNetwork import QLocalSocket
 except ImportError as exc:
     raise RuntimeError(
-        "The desktop app requires PySide6; install sphere-mesh-lab[gui]"
+        "The desktop app requires PySide6; install spherosphere[gui]"
     ) from exc
 
 
@@ -26,7 +27,7 @@ MAX_LIGHT_VALUE = 0xFFFF
 
 def _preset_catalog() -> dict:
     """Load bundled preview metadata, tolerating missing optional media."""
-    directory = files("sphere_mesh.gui").joinpath("assets", "presets")
+    directory = files("spherosphere.gui").joinpath("assets", "presets")
     try:
         catalog = json.loads(directory.joinpath("catalog.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -120,7 +121,7 @@ class SphereBackend(QObject):
 
     def __init__(
         self,
-        socket_path: str | Path = "state/sphere.sock",
+        socket_path: str | Path | None = None,
         parent: QObject | None = None,
         *,
         start: bool = True,
@@ -129,7 +130,8 @@ class SphereBackend(QObject):
     ) -> None:
         super().__init__(parent)
         self._preset_catalog = _preset_catalog()
-        self._socket_path = str(Path(socket_path).expanduser().resolve())
+        self._socket_path = str(Path(socket_path if socket_path is not None
+                                     else default_socket_path()).expanduser().resolve())
         self._queue: deque[_Request] = deque()
         self._active: _Request | None = None
         self._socket: QLocalSocket | None = None

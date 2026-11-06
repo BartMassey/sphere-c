@@ -10,10 +10,10 @@ import pytest
 
 from btmesh.access import OP_GENERIC_ONOFF_STATUS, OP_LIGHT_LIGHTNESS_STATUS
 from btmesh.node import ReceivedMessage
-from sphere_mesh.api import ApiRequestError
-from sphere_mesh.daemon import MeshRuntime
-from sphere_mesh.state import new_state
-from sphere_mesh.vendor import OP_TUYA_DP_DATA
+from spherosphere.api import ApiRequestError
+from spherosphere.daemon import MeshRuntime
+from spherosphere.state import new_state
+from spherosphere.vendor import OP_TUYA_DP_DATA
 
 
 def composition(address, *, vendor=True, lightness=True):

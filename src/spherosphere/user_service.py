@@ -13,16 +13,17 @@ import sysconfig
 
 from .state import StateLockedError, StateStore
 from .transport import adapter_selector
+from .paths import config_root, config_path, state_path, socket_path
 
 
-UNIT = "sphere-mesh.service"
+UNIT = "spherosphere.service"
 
 
 def service_assets() -> Path:
     """Find templates in a checkout or an installed distribution."""
     for directory in (
         Path(__file__).resolve().parents[2] / "packaging/systemd",
-        Path(sysconfig.get_path("data")) / "share/sphere-mesh/systemd",
+        Path(sysconfig.get_path("data")) / "share/spherosphere/systemd",
     ):
         if (directory / UNIT).is_file():
             return directory
@@ -31,13 +32,7 @@ def service_assets() -> Path:
 
 def user_paths() -> tuple[Path, Path, Path]:
     """Resolve standard XDG paths without depending on a login shell."""
-    home = Path.home()
-    config = Path(os.environ.get("XDG_CONFIG_HOME", home / ".config"))
-    state = Path(os.environ.get("XDG_STATE_HOME", home / ".local/state"))
-    runtime = os.environ.get("XDG_RUNTIME_DIR")
-    if not runtime:
-        raise ValueError("XDG_RUNTIME_DIR is missing; run from your user login session")
-    return config, state / "sphere-mesh/state.json", Path(runtime) / "sphere-mesh/control.sock"
+    return config_root(), state_path(), socket_path()
 
 
 def absolute_path(value: str | Path) -> Path:
@@ -96,12 +91,35 @@ def systemctl(*arguments: str, check=True):
                           capture_output=True, text=True)
 
 
+def move_state(source: Path, destination: Path) -> None:
+    """Move one stopped controller's state without cloning its Mesh identity.
+
+    Both locations stay locked throughout the move. Existing destinations
+    are rejected; a cross-filesystem move fails rather than copying keys.
+    """
+    source, destination = absolute_path(source), absolute_path(destination)
+    if source == destination or source.is_symlink() or not source.is_file():
+        raise ValueError("source must be a regular existing state at a different path")
+    with StateStore(source) as old, StateStore(destination):
+        if destination.exists() or destination.is_symlink():
+            raise ValueError("destination state already exists; never merge Mesh identities")
+        old.load_or_create()  # Validate under the source lock before moving.
+        source.rename(destination)
+        for parent in {source.parent, destination.parent}:
+            fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+    print(f"Moved Mesh state to {destination}; no keys or sequence values changed")
+
+
 def install(args: argparse.Namespace) -> None:
     """Install configuration and optionally start a supervised state owner."""
     if os.geteuid() == 0:
         raise ValueError("install the user unit as your normal user, without sudo")
     config_root, default_state, default_socket = user_paths()
-    manifest = config_root / "sphere-mesh/install.json"
+    manifest = config_root / "spherosphere/install.json"
     previous = {}
     if manifest.exists():
         try:
@@ -116,12 +134,12 @@ def install(args: argparse.Namespace) -> None:
     # Changing profile must not silently select a new network state file.
     state = absolute_path(args.state or previous.get("state") or default_state)
     socket = absolute_path(args.socket or previous.get("socket") or default_socket)
-    executable = args.executable or previous.get("executable") or shutil.which("sphere-meshd")
+    executable = args.executable or previous.get("executable") or shutil.which("spherosphered")
     if executable is None:
-        candidate = Path(sys.executable).with_name("sphere-meshd")
+        candidate = Path(sys.executable).with_name("spherosphered")
         executable = candidate if candidate.is_file() else None
     if executable is None:
-        raise ValueError("sphere-meshd is not installed; provide --executable PATH")
+        raise ValueError("spherosphered is not installed; provide --executable PATH")
     executable = absolute_path(executable)
     if not executable.is_file() or not os.access(executable, os.X_OK):
         raise ValueError(f"daemon executable is not executable: {executable}")
@@ -137,16 +155,18 @@ def install(args: argparse.Namespace) -> None:
                 pass
         except StateLockedError as exc:
             raise ValueError("stop the foreground daemon before enabling the user service") from exc
-    config = absolute_path(config_root / "sphere-mesh/daemon.toml")
+    config = absolute_path(config_path())
     unit = config_root / "systemd/user" / UNIT
     assets = service_assets()
     settings = [
-        "# Managed by sphere-mesh-service; edit and restart the user unit.",
+        "# Managed by spherosphere-service; edit and restart the user unit.",
         "mode = " + json.dumps("proxy" if args.profile == "proxy" else "mesh"),
     ]
     if args.adapter:
         settings.append("adapter = " + json.dumps(args.adapter))
     settings.extend((
+        "state = " + json.dumps(str(state)),
+        "socket = " + json.dumps(str(socket)),
         "experimental_enrollment = " + str(args.experimental_enrollment).lower(),
         "verbose = false",
     ))
@@ -187,10 +207,15 @@ def main(argv: list[str] | None = None) -> int:
     for action in ("status", "restart", "stop"):
         commands.add_parser(action)
     commands.add_parser("logs")
+    migrate = commands.add_parser("migrate-state", help="move stopped legacy Mesh state to XDG storage")
+    migrate.add_argument("source", type=Path)
+    migrate.add_argument("--destination", type=Path)
     args = parser.parse_args(argv)
     try:
         if args.command == "install":
             install(args)
+        elif args.command == "migrate-state":
+            move_state(args.source, args.destination or state_path())
         elif args.command == "logs":
             return subprocess.call(["journalctl", "--user", "-u", UNIT, "-f"])
         else:
@@ -200,7 +225,7 @@ def main(argv: list[str] | None = None) -> int:
             return result.returncode
     except (ValueError, OSError, subprocess.CalledProcessError) as exc:
         message = exc.stderr.strip() if isinstance(exc, subprocess.CalledProcessError) else str(exc)
-        print(f"sphere-mesh-service: {message}", file=sys.stderr)
+        print(f"spherosphere-service: {message}", file=sys.stderr)
         return 1
     return 0
 

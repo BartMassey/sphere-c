@@ -14,7 +14,7 @@ from typing import Any
 
 API_VERSION = 1
 MAX_MESSAGE_BYTES = 64 * 1024
-logger = logging.getLogger("sphere-api")
+logger = logging.getLogger("spherosphere-api")
 
 
 class ApiRequestError(RuntimeError):

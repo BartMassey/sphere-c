@@ -14,14 +14,14 @@ import pytest
 
 @pytest.fixture
 def helper(tmp_path, monkeypatch):
-    namespace = runpy.run_path(str(Path(__file__).resolve().parents[1] / "bin/sphere-bt"))
+    namespace = runpy.run_path(str(Path(__file__).resolve().parents[1] / "bin/spherosphere-bt"))
     main = namespace["main"]
     process = Mock(return_value=SimpleNamespace(returncode=0, stdout=""))
     monkeypatch.setitem(main.__globals__, "ROOT", tmp_path)
     monkeypatch.setitem(main.__globals__, "subprocess", SimpleNamespace(run=process))
 
     def invoke(*arguments):
-        monkeypatch.setattr("sys.argv", ["sphere-bt", *arguments])
+        monkeypatch.setattr("sys.argv", ["spherosphere-bt", *arguments])
         return main()
 
     return SimpleNamespace(invoke=invoke, process=process, root=tmp_path,
@@ -55,7 +55,7 @@ def test_capture_creates_private_files_and_runs_bounded_fixed_tool(helper):
 def test_client_options_are_forwarded_in_order(helper):
     helper.invoke("ctl", "--device", "ARI", "control", "read")
     assert helper.process.call_args.args[0] == [
-        str(helper.root / "bin/sphere-meshctl"), "--device", "ARI", "control", "read",
+        str(helper.root / "bin/spherospherectl"), "--device", "ARI", "control", "read",
     ]
 
 
@@ -107,7 +107,7 @@ def test_invalid_new_options_are_rejected_before_execution(helper, args):
 ])
 def test_daemon_forwards_only_supported_flags(helper, args, expected):
     helper.invoke("daemon", *args)
-    assert helper.process.call_args.args[0] == [str(helper.root / "bin/sphere-meshd"), *expected]
+    assert helper.process.call_args.args[0] == [str(helper.root / "bin/spherosphered"), *expected]
     assert not helper.process.call_args.kwargs.get("shell", False)
 
 
@@ -173,7 +173,7 @@ def test_management_runs_only_btmgmt_without_interpreting_shell_text(helper):
 def test_control_passes_arguments_to_fixed_unprivileged_project_client(helper):
     helper.invoke("ctl", "control", "read", ";", "arbitrary-command")
     assert helper.process.call_args.args == ([
-        str(helper.root / "bin/sphere-meshctl"), "control", "read", ";", "arbitrary-command",
+        str(helper.root / "bin/spherospherectl"), "control", "read", ";", "arbitrary-command",
     ],)
     assert not helper.process.call_args.kwargs.get("shell", False)
 
@@ -197,15 +197,15 @@ def test_daemon_stop_uses_exact_project_module_pattern_and_sigterm_only(helper, 
     # pgrep uses POSIX ERE; Python's noncapturing-group extension is invalid.
     assert "(?" not in pattern
     executable = str(helper.root / ".venv/bin/python")
-    assert re.search(pattern, executable + " -m sphere_mesh.daemon")
-    assert re.search(pattern, executable + " -m sphere_mesh.daemon --verbose")
+    assert re.search(pattern, executable + " -m spherosphere.daemon")
+    assert re.search(pattern, executable + " -m spherosphere.daemon --verbose")
     for other in (
-        "python -m sphere_mesh.daemon",
-        str(helper.root / "other/.venv/bin/python") + " -m sphere_mesh.daemon",
-        executable + " -m sphere_mesh.daemon_other",
-        executable + " -m sphere_meshXdaemon",
+        "python -m spherosphere.daemon",
+        str(helper.root / "other/.venv/bin/python") + " -m spherosphere.daemon",
+        executable + " -m spherosphere.daemon_other",
+        executable + " -m spherosphereXdaemon",
         executable + " unrelated.py",
-        "prefix " + executable + " -m sphere_mesh.daemon",
+        "prefix " + executable + " -m spherosphere.daemon",
     ):
         assert not re.search(pattern, other), other
     assert kill.call_args_list == [

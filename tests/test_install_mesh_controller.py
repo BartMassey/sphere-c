@@ -114,7 +114,7 @@ def test_upgrade_old_format_preserves_existing_backup_and_is_idempotent(host):
     module.DROPIN.parent.mkdir()
     old = ("[Unit]\nWants=bluetooth.service\nAfter=bluetooth.service\n"
            "[Service]\nExecStart=\nExecStart=/usr/local/libexec/"
-           f"sphere-mesh-controller --controller {ADDRESS}\n")
+           f"spherosphere-controller --controller {ADDRESS}\n")
     module.DROPIN.write_text(old)
     previous = module.DROPIN.with_suffix(".conf.previous")
     previous.write_text("earlier backup\n")

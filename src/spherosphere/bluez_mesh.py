@@ -33,7 +33,7 @@ from .access import (
 
 SERVICE = "org.bluez.mesh"
 NETWORK_PATH = "/org/bluez/mesh"
-ROOT_PATH = "/org/sphere_mesh"
+ROOT_PATH = "/org/spherosphere"
 APP_PATH = ROOT_PATH + "/application"
 ELEMENT_PATH = APP_PATH + "/element0"
 APPLICATION = "org.bluez.mesh.Application1"

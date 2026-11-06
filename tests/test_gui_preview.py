@@ -19,7 +19,7 @@ from PySide6.QtGui import QGuiApplication
 from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtQuick import QQuickItem
 from PySide6.QtTest import QTest
-from sphere_mesh.gui.backend import SphereBackend
+from spherosphere.gui.backend import SphereBackend
 
 app = QGuiApplication([])
 with tempfile.TemporaryDirectory() as directory:
@@ -28,7 +28,7 @@ with tempfile.TemporaryDirectory() as directory:
     backend._enqueue = calls.append
     engine = QQmlApplicationEngine()
     engine.rootContext().setContextProperty('sphere', backend)
-    engine.load(str(Path('src/sphere_mesh/gui/qml/Main.qml').resolve()))
+    engine.load(str(Path('src/spherosphere/gui/qml/Main.qml').resolve()))
     root = engine.rootObjects()[0]
     backend._accept('effects', {'effects': [
         {'slug': 'aurora', 'label': 'Aurora', 'visible': True},

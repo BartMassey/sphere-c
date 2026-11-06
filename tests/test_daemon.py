@@ -4,9 +4,9 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from sphere_mesh.daemon import ConnectionSupervisor
-from sphere_mesh import daemon
-from sphere_mesh.state import new_state
+from spherosphere.daemon import ConnectionSupervisor
+from spherosphere import daemon
+from spherosphere.state import new_state
 
 
 class FakeSession:

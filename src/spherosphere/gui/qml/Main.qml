@@ -11,7 +11,7 @@ ApplicationWindow {
     minimumWidth: 320
     minimumHeight: 520
     visible: true
-    title: qsTr("Sphere C")
+    title: qsTr("Spherosphere")
 
     property int currentPage: 0
     property string effectCategory: "pattern"
@@ -234,7 +234,7 @@ ApplicationWindow {
                 spacing: 1
 
                 Label {
-                    text: qsTr("Sphere C")
+                    text: qsTr("Spherosphere")
                     color: root.foreground
                     font.pixelSize: 22
                     font.weight: Font.Bold

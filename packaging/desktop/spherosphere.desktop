@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Spherosphere
+GenericName=Bluetooth Mesh light controller
+Comment=Control an Olight Sphere C through the local Spherosphere service
+Exec=spherosphere
+Icon=spherosphere
+Terminal=false
+Categories=Utility;
+StartupNotify=true

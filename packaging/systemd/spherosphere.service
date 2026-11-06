@@ -1,17 +1,17 @@
 [Unit]
-Description=Local Olight Sphere Bluetooth Mesh controller
+Description=Spherosphere Bluetooth Mesh controller
 After=bluetooth.target
 Wants=bluetooth.target
 
 [Service]
 Type=simple
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin
-RuntimeDirectory=sphere-mesh
+RuntimeDirectory=spherosphere
 RuntimeDirectoryMode=0700
-StateDirectory=sphere-mesh
+StateDirectory=spherosphere
 StateDirectoryMode=0700
 # Mesh mode requires a separate system bluetooth-meshd controller setup.
-ExecStart=/usr/bin/env sphere-meshd --config %h/.config/sphere-mesh/daemon.toml --state %S/sphere-mesh/state.json --socket %t/sphere-mesh/control.sock
+ExecStart=/usr/bin/env spherosphered
 Restart=on-failure
 RestartSec=3
 UMask=0077
@@ -21,7 +21,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=%S/sphere-mesh %t/sphere-mesh
+ReadWritePaths=%S/spherosphere %t/spherosphere
 
 [Install]
 WantedBy=default.target

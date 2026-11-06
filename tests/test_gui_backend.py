@@ -11,7 +11,7 @@ pytest.importorskip("PySide6")
 from PySide6.QtCore import QCoreApplication
 from PySide6.QtNetwork import QLocalServer
 
-from sphere_mesh.gui.backend import (
+from spherosphere.gui.backend import (
     SphereBackend,
     hsv_to_mesh_hsl,
     mesh_hsl_to_hsv,
@@ -399,7 +399,7 @@ def test_missing_daemon_is_reported(app, tmp_path):
 
 
 def test_preset_catalog_resolves_existing_media_and_handles_missing(tmp_path, monkeypatch):
-    from sphere_mesh.gui import backend as gui_backend
+    from spherosphere.gui import backend as gui_backend
 
     directory = tmp_path / "assets" / "presets"
     directory.mkdir(parents=True)

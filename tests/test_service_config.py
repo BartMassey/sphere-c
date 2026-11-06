@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from sphere_mesh import daemon
+from spherosphere import daemon
 
 
 def config_file(tmp_path, text):
@@ -35,7 +35,7 @@ enroll_seconds = 30
 @pytest.mark.parametrize("contents", [
     'backend = "bluez"', 'mode = "bluez"', 'mode = 1',
     'adapter = "bad"', 'adapter = 1', 'state = "relative"',
-    'socket = "/tmp/socket"', 'verbose = 1', 'experimental_enrollment = "true"',
+    'socket = "relative"', 'verbose = 1', 'experimental_enrollment = "true"',
     'enroll_seconds = true', 'enroll_seconds = 3601', '[mode]\nx = 1',
     'mode = ',
 ])

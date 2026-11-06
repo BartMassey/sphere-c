@@ -6,7 +6,7 @@ import xml.etree.ElementTree as ET
 
 
 ROOT = Path(__file__).resolve().parents[1]
-GUI_ROOT = ROOT / "src" / "sphere_mesh" / "gui"
+GUI_ROOT = ROOT / "src" / "spherosphere" / "gui"
 DESKTOP_ROOT = ROOT / "packaging" / "desktop"
 
 
@@ -19,8 +19,8 @@ def test_gui_optional_dependency_and_entry_point():
 
     assert any(dependency.startswith("PySide6") for dependency in
                project["optional-dependencies"]["gui"])
-    assert project["scripts"]["sphere-mesh-gui"] == (
-        "sphere_mesh.gui.app:main"
+    assert project["scripts"]["spherosphere"] == (
+        "spherosphere.gui.app:main"
     )
 
     app = ast.parse((GUI_ROOT / "app.py").read_text())
@@ -30,7 +30,7 @@ def test_gui_optional_dependency_and_entry_point():
 
 def test_gui_resources_are_included_as_package_data():
     data = _metadata()["tool"]["setuptools"]["package-data"]
-    patterns = data["sphere_mesh.gui"]
+    patterns = data["spherosphere.gui"]
     packaged = {
         path.relative_to(GUI_ROOT)
         for pattern in patterns
@@ -49,23 +49,23 @@ def test_gui_resources_are_included_as_package_data():
 
 def test_desktop_launcher_and_icon_are_installed():
     data_files = _metadata()["tool"]["setuptools"]["data-files"]
-    assert "packaging/desktop/sphere-mesh-gui.desktop" in (
+    assert "packaging/desktop/spherosphere.desktop" in (
         data_files["share/applications"]
     )
-    assert "packaging/desktop/sphere-mesh-gui.svg" in (
+    assert "packaging/desktop/spherosphere.svg" in (
         data_files["share/icons/hicolor/scalable/apps"]
     )
     assert "packaging/desktop/ASSETS.md" in (
-        data_files["share/doc/sphere-mesh-lab"]
+        data_files["share/doc/spherosphere"]
     )
 
     launcher = configparser.ConfigParser(interpolation=None)
-    launcher.read(DESKTOP_ROOT / "sphere-mesh-gui.desktop")
+    launcher.read(DESKTOP_ROOT / "spherosphere.desktop")
     entry = launcher["Desktop Entry"]
     assert entry["Type"] == "Application"
-    assert entry["Exec"] == "sphere-mesh-gui"
-    assert entry["Icon"] == "sphere-mesh-gui"
+    assert entry["Exec"] == "spherosphere"
+    assert entry["Icon"] == "spherosphere"
     assert entry["Terminal"] == "false"
 
-    icon = ET.parse(DESKTOP_ROOT / "sphere-mesh-gui.svg").getroot()
+    icon = ET.parse(DESKTOP_ROOT / "spherosphere.svg").getroot()
     assert icon.tag == "{http://www.w3.org/2000/svg}svg"

@@ -22,6 +22,7 @@ import os
 import sys
 import time
 from pathlib import Path
+from .paths import state_path
 
 from btmesh.access import (
     MODEL_GENERIC_ONOFF_SERVER,
@@ -92,7 +93,7 @@ from .state import (
     save_state,
 )
 
-logger = logging.getLogger("sphere-provision")
+logger = logging.getLogger("spherosphere-provision")
 
 LOG_FILE = "state/provision_run.log"
 SCAN_UNPROVISIONED_S = float(os.environ.get("SPHERE_SCAN_SECONDS", "60"))
@@ -151,7 +152,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="static OOB authentication value (1-16 bytes, hex)",
     )
     parser.add_argument(
-        "--state", default="state/sphere_state.json",
+        "--state", default=str(state_path()),
         help="state file: keys, addresses, SEQ (default: %(default)s)",
     )
     parser.add_argument(

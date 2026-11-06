@@ -2,8 +2,8 @@ import asyncio
 
 import pytest
 
-from sphere_mesh import client
-from sphere_mesh.client import parse_args
+from spherosphere import client
+from spherosphere.client import parse_args
 
 
 def test_vendor_read_accepts_decimal_and_prefixed_ids():

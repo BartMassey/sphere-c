@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from spherosphere.paths import state_path
 """Exercise both configured lamps through the BlueZ Mesh advertising bearer."""
 
 import argparse
@@ -9,9 +10,9 @@ import os
 from pathlib import Path
 import time
 
-from sphere_mesh.bluez_mesh import open_bluez_mesh_session
-from sphere_mesh.control import BasicController
-from sphere_mesh.state import StateStore
+from spherosphere.bluez_mesh import open_bluez_mesh_session
+from spherosphere.control import BasicController
+from spherosphere.state import StateStore
 
 
 class VerificationError(Exception):
@@ -202,7 +203,7 @@ def main():
             stream.flush()
             os.fsync(stream.fileno())
         record({"success": False, "status": "starting"})
-        result = asyncio.run(prove(Path("state/sphere_state.json"), args.seconds,
+        result = asyncio.run(prove(state_path(), args.seconds,
                                    args.hold_seconds, record))
     raise SystemExit(0 if result["success"] else 1)
 

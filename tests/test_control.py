@@ -4,7 +4,7 @@ import pytest
 
 from btmesh.access import OP_GENERIC_ONOFF_STATUS, generic_onoff_get
 from btmesh.node import ReceivedMessage
-from sphere_mesh.control import BasicController, ControlUnavailable
+from spherosphere.control import BasicController, ControlUnavailable
 
 
 def status(present: int, target: int | None = None) -> ReceivedMessage:

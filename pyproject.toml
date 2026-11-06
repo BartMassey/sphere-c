@@ -3,9 +3,9 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "sphere-mesh-lab"
-version = "0.1.0"
-description = "Olight Sphere C Bluetooth Mesh research and local control"
+name = "spherosphere"
+version = "0.2.0"
+description = "Spherosphere: local Bluetooth Mesh control of Olight Sphere C lights"
 requires-python = ">=3.12"
 dependencies = [
     "btmesh[harness] @ git+https://github.com/dasimon135/ha-bluetooth-mesh.git@a8f7bbbebaeba124d7d08cb16122055074f2ef46",
@@ -23,29 +23,29 @@ dev = [
 ]
 
 [project.scripts]
-sphere-mesh = "sphere_mesh.provision:main"
-sphere-capture = "sphere_mesh.capture:main"
-sphere-meshctl = "sphere_mesh.client:main"
-sphere-meshd = "sphere_mesh.daemon:main"
-sphere-mesh-service = "sphere_mesh.user_service:main"
-sphere-mesh-gui = "sphere_mesh.gui.app:main"
+spherosphere-provision = "spherosphere.provision:main"
+spherosphere-capture = "spherosphere.capture:main"
+spherospherectl = "spherosphere.client:main"
+spherosphered = "spherosphere.daemon:main"
+spherosphere-service = "spherosphere.user_service:main"
+spherosphere = "spherosphere.gui.app:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-"sphere_mesh.gui" = ["qml/*.qml", "qml/**/*.qml", "qml/shaders/*.frag", "qml/shaders/*.qsb", "assets/*", "assets/**/*"]
+"spherosphere.gui" = ["qml/*.qml", "qml/**/*.qml", "qml/shaders/*.frag", "qml/shaders/*.qsb", "assets/*", "assets/**/*"]
 
 [tool.setuptools.data-files]
-"share/applications" = ["packaging/desktop/sphere-mesh-gui.desktop"]
-"share/icons/hicolor/scalable/apps" = ["packaging/desktop/sphere-mesh-gui.svg"]
-"share/doc/sphere-mesh-lab" = ["packaging/desktop/ASSETS.md"]
-"share/sphere-mesh/systemd" = [
-    "packaging/systemd/sphere-mesh.service",
+"share/applications" = ["packaging/desktop/spherosphere.desktop"]
+"share/icons/hicolor/scalable/apps" = ["packaging/desktop/spherosphere.svg"]
+"share/doc/spherosphere" = ["packaging/desktop/ASSETS.md"]
+"share/spherosphere/systemd" = [
+    "packaging/systemd/spherosphere.service",
     "packaging/systemd/proxy.toml",
     "packaging/systemd/mesh.toml",
     "packaging/systemd/split.toml",
-    "packaging/systemd/sphere-mesh-controller",
+    "packaging/systemd/spherosphere-controller",
     "scripts/install_mesh_controller.py",
 ]
 

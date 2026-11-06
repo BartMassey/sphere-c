@@ -9,7 +9,7 @@ import pytest
 
 pytest.importorskip("PySide6")
 
-from sphere_mesh.gui import app as gui_app
+from spherosphere.gui import app as gui_app
 
 
 def default_socket_path():
@@ -18,7 +18,7 @@ def default_socket_path():
 
 def test_application_icon_path_finds_checkout(monkeypatch, tmp_path):
     checkout = tmp_path / "checkout"
-    icon = checkout / "packaging" / "desktop" / "sphere-mesh-gui.svg"
+    icon = checkout / "packaging" / "desktop" / "spherosphere.svg"
     icon.parent.mkdir(parents=True)
     icon.write_text("<svg/>")
     monkeypatch.setattr(gui_app, "SOURCE_CHECKOUT_ROOT", checkout)
@@ -28,38 +28,38 @@ def test_application_icon_path_finds_checkout(monkeypatch, tmp_path):
 
 def test_default_socket_path_prefers_override(monkeypatch, tmp_path):
     socket = tmp_path / "sphere.sock"
-    monkeypatch.setenv("SPHERE_MESH_SOCKET", str(socket))
+    monkeypatch.setenv("SPHEROSPHERE_SOCKET", str(socket))
     assert default_socket_path() == socket
 
 
 def test_default_socket_path_waits_for_installed_service(
     monkeypatch, tmp_path
 ):
-    monkeypatch.delenv("SPHERE_MESH_SOCKET", raising=False)
+    monkeypatch.delenv("SPHEROSPHERE_SOCKET", raising=False)
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "run"))
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(gui_app, "SOURCE_CHECKOUT_ROOT", tmp_path / "installed")
     assert default_socket_path() == (
-        tmp_path / "run" / "sphere-mesh" / "control.sock"
+        tmp_path / "run" / "spherosphere" / "control.sock"
     )
 
 
-def test_default_socket_path_recognizes_development_checkout(
+def test_default_socket_path_ignores_development_checkout(
     monkeypatch, tmp_path
 ):
-    monkeypatch.delenv("SPHERE_MESH_SOCKET", raising=False)
+    monkeypatch.delenv("SPHEROSPHERE_SOCKET", raising=False)
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "run"))
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(gui_app, "SOURCE_CHECKOUT_ROOT", tmp_path / "installed")
     (tmp_path / "state").mkdir()
     (tmp_path / "state" / "sphere_state.json").write_text("{}")
-    assert default_socket_path() == tmp_path / "state" / "sphere.sock"
+    assert default_socket_path() == tmp_path / "run/spherosphere/control.sock"
 
 
-def test_default_socket_path_finds_editable_checkout(
+def test_default_socket_path_ignores_editable_checkout(
     monkeypatch, tmp_path
 ):
-    monkeypatch.delenv("SPHERE_MESH_SOCKET", raising=False)
+    monkeypatch.delenv("SPHEROSPHERE_SOCKET", raising=False)
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "run"))
     launch_dir = tmp_path / "elsewhere"
     checkout = tmp_path / "checkout"
@@ -68,7 +68,7 @@ def test_default_socket_path_finds_editable_checkout(
     (checkout / "state" / "sphere_state.json").write_text("{}")
     monkeypatch.chdir(launch_dir)
     monkeypatch.setattr(gui_app, "SOURCE_CHECKOUT_ROOT", checkout)
-    assert default_socket_path() == checkout / "state" / "sphere.sock"
+    assert default_socket_path() == tmp_path / "run/spherosphere/control.sock"
 
 
 def test_qml_application_loads_offscreen(tmp_path):
@@ -81,7 +81,7 @@ def test_qml_application_loads_offscreen(tmp_path):
         [
             sys.executable,
             "-m",
-            "sphere_mesh.gui.app",
+            "spherosphere.gui.app",
             "--socket",
             str(tmp_path / "missing.sock"),
             "--test-quit-after-load",
@@ -103,14 +103,14 @@ from PySide6.QtCore import QObject, QMetaObject
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtTest import QTest
 from PySide6.QtQml import QQmlApplicationEngine
-from sphere_mesh.gui.backend import SphereBackend
+from spherosphere.gui.backend import SphereBackend
 
 app = QGuiApplication([])
 missing_socket = tempfile.TemporaryDirectory(prefix="sphere-gui-qml-")
 backend = SphereBackend(Path(missing_socket.name) / "sphere.sock", start=False)
 engine = QQmlApplicationEngine()
 engine.rootContext().setContextProperty("sphere", backend)
-engine.load(str(Path("src/sphere_mesh/gui/qml/Main.qml").resolve()))
+engine.load(str(Path("src/spherosphere/gui/qml/Main.qml").resolve()))
 root = engine.rootObjects()[0]
 feedback = root.findChild(QObject, "feedbackCard")
 state_label = root.findChild(QObject, "sphereStateLabel")
@@ -245,14 +245,14 @@ from PySide6.QtGui import QGuiApplication
 from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtQuick import QQuickItem
 from PySide6.QtTest import QTest
-from sphere_mesh.gui.backend import SphereBackend
+from spherosphere.gui.backend import SphereBackend
 
 app = QGuiApplication([])
 missing_socket = tempfile.TemporaryDirectory(prefix="sphere-gui-grid-")
 backend = SphereBackend(Path(missing_socket.name) / "sphere.sock", start=False)
 engine = QQmlApplicationEngine()
 engine.rootContext().setContextProperty("sphere", backend)
-engine.load(str(Path("src/sphere_mesh/gui/qml/Main.qml").resolve()))
+engine.load(str(Path("src/spherosphere/gui/qml/Main.qml").resolve()))
 root = engine.rootObjects()[0]
 grid = root.findChild(QQuickItem, "effectsGrid")
 repeater = root.findChild(QObject, "effectRepeater")
@@ -368,7 +368,7 @@ from PySide6.QtCore import QObject, QMetaObject
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtQuick import QQuickItem
-from sphere_mesh.gui.backend import SphereBackend
+from spherosphere.gui.backend import SphereBackend
 
 app = QGuiApplication([])
 with tempfile.TemporaryDirectory() as directory:
@@ -379,7 +379,7 @@ with tempfile.TemporaryDirectory() as directory:
     backend._enqueue = lambda request: None
     engine = QQmlApplicationEngine()
     engine.rootContext().setContextProperty('sphere', backend)
-    engine.load(str(Path('src/sphere_mesh/gui/qml/Main.qml').resolve()))
+    engine.load(str(Path('src/spherosphere/gui/qml/Main.qml').resolve()))
     root = engine.rootObjects()[0]
     app.processEvents()
     selector = root.findChild(QObject, 'deviceSelector')

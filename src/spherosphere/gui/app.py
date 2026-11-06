@@ -1,33 +1,15 @@
-"""Entry point for the optional Sphere C Qt desktop application."""
+"""Entry point for the Spherosphere Qt desktop application."""
 
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 from pathlib import Path
+from ..paths import socket_path as default_socket_path
 
 
 SOURCE_CHECKOUT_ROOT = Path(__file__).resolve().parents[3]
-ICON_NAME = "sphere-mesh-gui.svg"
-
-
-def default_socket_path() -> Path:
-    """Choose a stable development or installed service socket."""
-    override = os.environ.get("SPHERE_MESH_SOCKET")
-    if override:
-        return Path(override).expanduser()
-    checkout_roots = (Path.cwd(), SOURCE_CHECKOUT_ROOT)
-    for root in checkout_roots:
-        development = root / "state" / "sphere.sock"
-        if development.exists() or (
-            root / "state" / "sphere_state.json"
-        ).exists():
-            return development
-    runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
-    if runtime_dir:
-        return Path(runtime_dir) / "sphere-mesh" / "control.sock"
-    return Path.cwd() / "state" / "sphere.sock"
+ICON_NAME = "spherosphere.svg"
 
 
 def application_icon_path() -> Path | None:
@@ -46,7 +28,7 @@ def application_icon_path() -> Path | None:
 
 
 def parse_args(argv: list[str] | None = None) -> tuple[argparse.Namespace, list[str]]:
-    parser = argparse.ArgumentParser(description="Control an Olight Sphere C")
+    parser = argparse.ArgumentParser(description="Spherosphere: control your local Sphere C lights")
     parser.add_argument(
         "--socket",
         type=Path,
@@ -72,8 +54,8 @@ def main(argv: list[str] | None = None) -> int:
         from .backend import SphereBackend
     except (ImportError, RuntimeError) as exc:
         print(
-            "sphere-mesh-gui requires the optional GUI dependencies; "
-            "install sphere-mesh-lab[gui]",
+            "spherosphere requires the optional GUI dependencies; "
+            "install spherosphere[gui]",
             file=sys.stderr,
         )
         print(f"details: {exc}", file=sys.stderr)
@@ -81,15 +63,15 @@ def main(argv: list[str] | None = None) -> int:
 
     QQuickStyle.setStyle("Material")
     application = QGuiApplication([sys.argv[0], *qt_args])
-    application.setApplicationName("Sphere Mesh")
-    application.setApplicationDisplayName("Sphere C")
-    application.setOrganizationName("Sphere Mesh")
-    application.setDesktopFileName("sphere-mesh-gui")
+    application.setApplicationName("Spherosphere")
+    application.setApplicationDisplayName("Spherosphere")
+    application.setOrganizationName("Spherosphere")
+    application.setDesktopFileName("spherosphere")
     icon_path = application_icon_path()
     themed_icon = (
         QIcon(str(icon_path))
         if icon_path is not None
-        else QIcon.fromTheme("sphere-mesh-gui")
+        else QIcon.fromTheme("spherosphere")
     )
     if not themed_icon.isNull():
         application.setWindowIcon(themed_icon)

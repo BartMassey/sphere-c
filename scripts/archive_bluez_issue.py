@@ -28,11 +28,11 @@ def main() -> None:
     sources.append((Path("/usr/libexec/bluetooth/bluetooth-meshd"),
                     DESTINATION / "bluetooth-meshd"))
     for relative in (
-        "src/sphere_mesh/bluez_mesh.py", "src/sphere_mesh/enrollment.py",
-        "src/sphere_mesh/daemon.py", "src/sphere_mesh/transport.py",
-        "src/sphere_mesh/provision.py", "scripts/check_bluez_mesh.py",
+        "src/spherosphere/bluez_mesh.py", "src/spherosphere/enrollment.py",
+        "src/spherosphere/daemon.py", "src/spherosphere/transport.py",
+        "src/spherosphere/provision.py", "scripts/check_bluez_mesh.py",
         "scripts/check_mesh_members.py", "scripts/archive_bluez_issue.py",
-        "bin/sphere-bt", "pyproject.toml",
+        "bin/spherosphere-bt", "pyproject.toml",
     ):
         sources.append((ROOT / relative, DESTINATION / "helpers" / relative))
     manifest = {"archived_date": "2026-11-05", "private": True,

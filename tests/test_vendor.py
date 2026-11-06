@@ -6,7 +6,7 @@ import pytest
 
 from btmesh.access import AccessError
 from btmesh.node import ReceivedMessage
-from sphere_mesh.vendor import (
+from spherosphere.vendor import (
     OP_TUYA_DP_DATA,
     TuyaDpType,
     TuyaVendorController,

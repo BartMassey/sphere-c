@@ -29,7 +29,7 @@ from btmesh.proxy_config import FILTER_ACCEPT_LIST, add_addresses, set_filter_ty
 from btmesh.proxy_pdu import MSG_TYPE_NETWORK_PDU, MSG_TYPE_PROXY_CONFIG
 from btmesh.pump import BearerPump
 
-logger = logging.getLogger("sphere-transport")
+logger = logging.getLogger("spherosphere-transport")
 
 GATT_SESSION_ATTEMPTS = 3
 

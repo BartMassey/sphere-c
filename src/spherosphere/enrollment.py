@@ -26,7 +26,7 @@ from .transport import (
 )
 
 
-logger = logging.getLogger("sphere-enrollment")
+logger = logging.getLogger("spherosphere-enrollment")
 PROVISIONING = "00001827-0000-1000-8000-00805f9b34fb"
 DEVICE_INFORMATION = "0000180a-0000-1000-8000-00805f9b34fb"
 REVISION = "00002a26-0000-1000-8000-00805f9b34fb"

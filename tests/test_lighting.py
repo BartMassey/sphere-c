@@ -9,8 +9,8 @@ from btmesh.access import (
     light_lightness_get,
 )
 from btmesh.node import ReceivedMessage
-from sphere_mesh.access import OP_LIGHT_HSL_STATUS
-from sphere_mesh.lighting import (
+from spherosphere.access import OP_LIGHT_HSL_STATUS
+from spherosphere.lighting import (
     LightingController,
     LightingUnavailable,
     LightingUnsupported,

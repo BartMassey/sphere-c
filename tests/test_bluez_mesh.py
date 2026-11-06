@@ -8,11 +8,11 @@ import pytest
 from dbus_fast import Message, Variant
 from dbus_fast.constants import MessageType
 
-from sphere_mesh.bluez_mesh import (
+from spherosphere.bluez_mesh import (
     APP_PATH, ELEMENT_PATH, APPLICATION, BluezAccessNode, BluezMeshError,
     BluezMeshSession, MeshApplication, MeshElement, reserve_identity,
 )
-from sphere_mesh.state import StateError, StateStore, new_state
+from spherosphere.state import StateError, StateStore, new_state
 
 
 def test_identity_reservation_is_durable_and_does_not_reuse_old_source(tmp_path):

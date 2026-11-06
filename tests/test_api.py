@@ -2,7 +2,7 @@ import asyncio
 import json
 import stat
 
-from sphere_mesh.api import API_VERSION, UnixApiServer, request
+from spherosphere.api import API_VERSION, UnixApiServer, request
 
 
 async def test_api_round_trip_and_private_socket(tmp_path):
@@ -32,7 +32,7 @@ async def test_api_round_trip_and_private_socket(tmp_path):
 
 
 async def test_api_returns_public_request_errors(tmp_path):
-    from sphere_mesh.api import ApiRequestError
+    from spherosphere.api import ApiRequestError
 
     async def handler(method, params):
         raise ApiRequestError("unknown_method", f"unknown method: {method}")
@@ -53,7 +53,7 @@ async def test_api_returns_public_request_errors(tmp_path):
 
 
 async def test_api_preserves_partial_failure_details(tmp_path):
-    from sphere_mesh.api import ApiRequestError
+    from spherosphere.api import ApiRequestError
 
     async def handler(method, params):
         raise ApiRequestError(

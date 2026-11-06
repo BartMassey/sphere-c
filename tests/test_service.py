@@ -8,9 +8,9 @@ import pytest
 
 from btmesh.access import OP_GENERIC_ONOFF_STATUS, OP_LIGHT_LIGHTNESS_STATUS
 from btmesh.node import ReceivedMessage
-from sphere_mesh.api import ApiRequestError
-from sphere_mesh.daemon import DP_NAMES, JsonLogFormatter, SphereRuntime
-from sphere_mesh.vendor import OP_TUYA_DP_DATA
+from spherosphere.api import ApiRequestError
+from spherosphere.daemon import DP_NAMES, JsonLogFormatter, SphereRuntime
+from spherosphere.vendor import OP_TUYA_DP_DATA
 
 
 class Store:
@@ -205,7 +205,7 @@ async def test_verbose_interaction_trace_reports_decoded_vendor_data_without_key
     node.request = AsyncMock(side_effect=request)
     service, state = runtime(node)
     state["device_key"] = "private-device-key"
-    with caplog.at_level(logging.DEBUG, logger="sphere-daemon"):
+    with caplog.at_level(logging.DEBUG, logger="spherosphere-daemon"):
         await service.handle("vendor.read", {"dp_ids": [102]})
 
     events = [record.interaction for record in caplog.records
@@ -225,7 +225,7 @@ async def test_verbose_interaction_trace_reports_decoded_vendor_data_without_key
 
 async def test_verbose_interaction_trace_redacts_invalid_params_and_errors(caplog):
     service, _ = runtime(connected=False)
-    with caplog.at_level(logging.DEBUG, logger="sphere-daemon"):
+    with caplog.at_level(logging.DEBUG, logger="spherosphere-daemon"):
         with pytest.raises(ApiRequestError):
             await service.handle("vendor.read", {"dp_ids": "secret-key"})
     events = [record.interaction for record in caplog.records
@@ -239,7 +239,7 @@ async def test_verbose_interaction_trace_marks_mesh_timeout(caplog):
     node = Mock()
     node.request = AsyncMock(side_effect=TimeoutError())
     service, _ = runtime(node)
-    with caplog.at_level(logging.DEBUG, logger="sphere-daemon"):
+    with caplog.at_level(logging.DEBUG, logger="spherosphere-daemon"):
         with pytest.raises(ApiRequestError, match="did not answer OnOff Get"):
             await service.handle("control", {"command": "read"})
     events = [record.interaction for record in caplog.records

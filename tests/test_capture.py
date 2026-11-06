@@ -1,6 +1,6 @@
 import unittest
 
-from sphere_mesh import capture
+from spherosphere import capture
 
 
 class MeshCryptoTests(unittest.TestCase):

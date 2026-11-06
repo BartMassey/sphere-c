@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 
-path = Path(__file__).resolve().parents[1] / "packaging/systemd/sphere-mesh-controller"
+path = Path(__file__).resolve().parents[1] / "packaging/systemd/spherosphere-controller"
 loader = importlib.machinery.SourceFileLoader("mesh_controller_launcher", str(path))
 spec = importlib.util.spec_from_loader(loader.name, loader)
 launcher = importlib.util.module_from_spec(spec)

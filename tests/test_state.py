@@ -4,7 +4,7 @@ import stat
 
 import pytest
 
-from sphere_mesh.state import (
+from spherosphere.state import (
     MAX_NEXT_SEQUENCE,
     SCHEMA_VERSION,
     StateLockedError,

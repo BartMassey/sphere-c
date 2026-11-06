@@ -10,9 +10,9 @@ import pytest
 
 from btmesh.access import OP_GENERIC_ONOFF_STATUS
 from btmesh.node import ReceivedMessage
-from sphere_mesh import daemon
-from sphere_mesh.api import request
-from sphere_mesh.state import StateLockedError, StateStore, new_state
+from spherosphere import daemon
+from spherosphere.api import request
+from spherosphere.state import StateLockedError, StateStore, new_state
 
 
 async def test_service_owns_state_reconnects_and_serializes_requests(

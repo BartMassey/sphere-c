@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 from .api import ApiProtocolError, request
+from .paths import socket_path
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -16,8 +17,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--socket",
         type=Path,
-        default=Path("state/sphere.sock"),
-        help="service socket (default: %(default)s)",
+        default=socket_path(),
+        help="service socket (default: shared Spherosphere config / XDG runtime)",
     )
     parser.add_argument(
         "--device",
@@ -111,7 +112,7 @@ async def async_main(args: argparse.Namespace) -> int:
     try:
         response = await request(args.socket, method, params)
     except (OSError, ApiProtocolError) as exc:
-        print(f"sphere service unavailable: {exc}", file=sys.stderr)
+        print(f"Spherosphere service unavailable: {exc}", file=sys.stderr)
         return 1
     output = response.get("result") if response["ok"] else response.get("error")
     print(json.dumps(output, indent=2, sort_keys=True))

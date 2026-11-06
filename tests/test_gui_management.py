@@ -52,7 +52,7 @@ app = QGuiApplication([])
 backend = FakeBackend()
 engine = QQmlApplicationEngine()
 engine.rootContext().setContextProperty("fakeBackend", backend)
-qml_dir = Path("src/sphere_mesh/gui/qml").resolve().as_uri()
+qml_dir = Path("src/spherosphere/gui/qml").resolve().as_uri()
 qml = f''' + "'''" + r'''
 import QtQuick
 import QtQuick.Controls
