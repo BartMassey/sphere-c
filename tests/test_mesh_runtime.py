@@ -106,6 +106,37 @@ async def test_vendor_mode_cache_is_per_device_and_expires_on_reconnect():
     assert (await runtime.handle("effect.get", {"device": "ARI"}))["work_mode"] is None
 
 
+async def test_effect_selection_persists_per_device_and_restores_as_saved():
+    runtime, node, state, store = mesh_runtime()
+
+    async def reply(address, _payload, opcode, **_kwargs):
+        return ReceivedMessage(src=address, opcode=opcode, params=b"\x01")
+
+    node.request.side_effect = reply
+    await runtime.handle("effect.activate", {"device": "ARI", "name": "aurora"})
+    await runtime.handle("effect.set", {"device": "BEN", "name": "colour_7"})
+    assert state["devices"]["0x012a"]["last_preview"] == {
+        "effect_value": 2, "work_mode": 1,
+    }
+    assert state["devices"]["0x0124"]["last_preview"] == {"effect_value": 7}
+    restored = MeshRuntime(runtime.supervisor, state, store)
+    ari = await restored.handle("effect.get", {"device": "ARI"})
+    ben = await restored.handle("effect.get", {"device": "BEN"})
+    assert ari["effect"]["slug"] == "aurora" and ari["effect_source"] == "saved"
+    assert ari["work_mode"] is None and ari["last_known_work_mode"] == 1
+    assert ben["effect"]["value"] == 7 and ben["effect_source"] == "saved"
+
+    async def readback(address, _payload, opcode, **_kwargs):
+        return ReceivedMessage(src=address, opcode=opcode,
+                               params=bytes.fromhex("01020400660405"))
+
+    node.request.side_effect = readback
+    observed = await restored.handle("effect.get", {"device": "ARI"})
+    assert observed["effect"]["value"] == 5
+    assert observed["effect_source"] == "readback"
+    assert observed["effect_active"] is False
+
+
 async def test_untargeted_request_is_rejected_when_multiple_members_exist():
     runtime, node, _, _ = mesh_runtime()
     with pytest.raises(ApiRequestError) as failure:

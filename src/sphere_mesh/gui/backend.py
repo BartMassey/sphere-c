@@ -159,6 +159,9 @@ class SphereBackend(QObject):
             "effect": {},
             "effectActive": False,
             "colorModeActive": False,
+            "workMode": None,
+            "previewKind": "unknown",
+            "previewStateSource": "unknown",
             "effects": [],
             "battery": None,
             "generation": 0,
@@ -208,6 +211,9 @@ class SphereBackend(QObject):
     effect = Property("QVariant", lambda self: self._get("effect"), notify=stateChanged)
     effectActive = Property(bool, lambda self: self._get("effectActive"), notify=stateChanged)
     colorModeActive = Property(bool, lambda self: self._get("colorModeActive"), notify=stateChanged)
+    workMode = Property("QVariant", lambda self: self._get("workMode"), notify=stateChanged)
+    previewKind = Property(str, lambda self: self._get("previewKind"), notify=stateChanged)
+    previewStateSource = Property(str, lambda self: self._get("previewStateSource"), notify=stateChanged)
     effects = Property("QVariant", lambda self: self._get("effects"), notify=effectsChanged)
     battery = Property("QVariant", lambda self: self._get("battery"), notify=stateChanged)
     generation = Property(int, lambda self: self._get("generation"), notify=stateChanged)
@@ -257,6 +263,8 @@ class SphereBackend(QObject):
             "device": self._state["device"],
             "last_failure": self._state["lastFailure"],
             "capabilities": self._state["capabilities"],
+            "preview_source": self._state["previewStateSource"],
+            "work_mode": self._state["workMode"],
             "pending_action": self._state["pendingAction"],
             "error": {
                 "message": self._state["errorMessage"],
@@ -429,6 +437,8 @@ class SphereBackend(QObject):
         self._verification = {}
         self._put(device=address, power=None, lightness=None, temperature=None,
                   hsl={}, effect={}, effectActive=False, colorModeActive=False,
+                  workMode=None,
+                  previewKind="unknown", previewStateSource="unknown",
                   battery=None, capabilities={}, connected=False,
                   errorMessage="", errorDetails={})
 
@@ -559,7 +569,8 @@ class SphereBackend(QObject):
             and socket_identity != self._socket_identity
         )
         if not connected or changed_generation or replaced_daemon:
-            self._put(effectActive=False, colorModeActive=False)
+            self._put(effectActive=False, colorModeActive=False,
+                      workMode=None, previewKind="unknown", previewStateSource="unknown")
         self._socket_identity = socket_identity
         was_connected = self._state["connected"]
         self._put(
@@ -611,11 +622,11 @@ class SphereBackend(QObject):
         operations: list[tuple[str, dict, str]] = []
         if capabilities.get("power"):
             operations.append(("control", {"command": "read"}, "power"))
+        if capabilities.get("effects"):
+            operations.extend((("effect.list", {}, "effects"), ("effect.get", {}, "effect")))
         for model in ("lightness", "hsl"):
             if capabilities.get(model):
                 operations.append(("lighting", {"command": model}, model))
-        if capabilities.get("effects"):
-            operations.extend((("effect.list", {}, "effects"), ("effect.get", {}, "effect")))
         if capabilities.get("vendor_read"):
             operations.append(("vendor.read", {"dp_ids": [103]}, "battery"))
 
@@ -680,16 +691,56 @@ class SphereBackend(QObject):
                 )
         elif field == "effect":
             effect = result.get("effect")
-            self._put(effect=effect if isinstance(effect, dict) else {})
             active = result.get("effect_active")
+            source = result.get("effect_source") or "unknown"
+            mode = result.get("work_mode")
+            mode_source = result.get("work_mode_source") or "readback"
+            if type(mode) is int and 0 <= mode <= 4:
+                # Current mode decides whether the reported preset is rendering.
+                # A saved preset alone must not select the Effects page.
+                active = mode == 1
+            elif type(active) is not bool and type(result.get("last_known_work_mode")) is int:
+                mode = result["last_known_work_mode"]
+                if 0 <= mode <= 4:
+                    active = mode == 1
+                    mode_source = "saved"
+                else:
+                    mode = None
+            elif (type(active) is not bool and self._state["pending"]
+                  and (self._state["effectActive"] or self._state["colorModeActive"])):
+                # A just-acknowledged activation is still known when an older
+                # daemon/firmware omits mode from its follow-up response.
+                active = True
+                source = "cached"
+                mode = None
+                mode_source = "cached"
+            else:
+                mode = None
+                mode_source = source
+            if mode == 0:
+                source = mode_source
+            elif mode is not None:
+                # Describe the weaker part of a scene/mode pair honestly.
+                source = next((value for value in ("saved", "cached", "unknown")
+                               if value in (source, mode_source)), "readback")
             if type(active) is bool:
                 color_mode = (
                     active
                     and isinstance(effect, dict)
                     and effect.get("slug") == "color-wheel"
                 )
-                self._put(effectActive=active and not color_mode,
-                          colorModeActive=color_mode)
+                self._put(effect=effect if isinstance(effect, dict) else {},
+                          workMode=mode, effectActive=active and not color_mode,
+                          colorModeActive=color_mode,
+                          previewKind=("color" if color_mode else "effect"
+                                       if active and isinstance(effect, dict) and effect.get("slug")
+                                       else "light" if not active and mode in (None, 0)
+                                       else "unknown"),
+                          previewStateSource=source)
+            else:
+                self._put(effect=effect if isinstance(effect, dict) else {},
+                          workMode=None, effectActive=False, colorModeActive=False,
+                          previewKind="unknown", previewStateSource="unknown")
         elif field == "battery":
             for item in result.get("datapoints", []):
                 if isinstance(item, dict) and item.get("id") == 103 and type(item.get("value")) is int:

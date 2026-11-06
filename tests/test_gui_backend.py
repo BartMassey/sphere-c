@@ -59,6 +59,10 @@ def test_phone_compatible_hsv_to_mesh_hsl(hsv, expected_hsl):
         assert abs(converted["saturation"] - hsv[2]) <= 1
 
 
+class ServiceRequest(dict):
+    """Wire request plus local test history, without extra protocol keys."""
+
+
 class FakeService:
     def __init__(self, path, handler):
         self.server = QLocalServer()
@@ -76,7 +80,8 @@ class FakeService:
     def _read(self, socket):
         raw = bytes(socket.readAll())
         for line in raw.splitlines():
-            request = json.loads(line)
+            request = ServiceRequest(json.loads(line))
+            request.history = list(self.requests)
             self.requests.append(request)
             result = self.handler(request)
             if result is not None:
@@ -129,7 +134,13 @@ def standard_handler(request):
     elif method == "effect.list":
         result = {"effects": EFFECTS}
     elif method == "effect.get":
-        result = {"effect": EFFECTS[0], "verification": {"independent_readback": True}}
+        activation = next((item for item in reversed(getattr(request, "history", []))
+                           if item["method"] == "effect.activate"), None)
+        selected = next((effect for effect in EFFECTS
+                         if activation and effect["slug"] == activation["params"]["name"]), EFFECTS[0])
+        result = {"effect": selected, "effect_active": True if activation else None,
+                  "effect_source": "cached" if activation else "readback",
+                  "verification": {"independent_readback": True}}
     elif method == "effect.activate":
         result = {"acknowledged": True}
     elif method == "vendor.read":
@@ -602,3 +613,68 @@ def test_invalid_daemon_response_is_not_reported_as_bluetooth_failure(app, socke
     finally:
         backend.close()
         service.close()
+
+
+def test_saved_effect_metadata_is_device_scoped_and_explicitly_last_known(app, tmp_path):
+    backend = SphereBackend(tmp_path / 'missing.sock', start=False)
+    try:
+        backend._select_device('0x0002')
+        backend._accept('effect', {'effect': EFFECTS[0], 'effect_source': 'saved',
+                                   'effect_active': None, 'last_known_work_mode': 1})
+        assert backend.effectActive and backend.previewKind == 'effect'
+        assert backend.previewStateSource == 'saved'
+        backend._select_device('0x0008')
+        assert backend.effect == {} and backend.previewKind == 'unknown'
+        assert backend.workMode is None
+        assert not backend.effectActive
+        backend._accept('effect', {'effect': EFFECTS[2], 'effect_source': 'cached',
+                                   'effect_active': True, 'work_mode': 1})
+        assert backend.colorModeActive and not backend.effectActive
+        assert backend.previewKind == 'color'
+    finally:
+        backend.close()
+
+
+@pytest.mark.parametrize('mode,kind,active', [
+    (0, 'light', False), (1, 'effect', True),
+    (2, 'unknown', False), (3, 'unknown', False),
+    (4, 'unknown', False),
+])
+def test_current_work_mode_controls_preview_over_stale_summary(app, tmp_path, mode, kind, active):
+    backend = SphereBackend(tmp_path / 'missing.sock', start=False)
+    try:
+        backend._accept('effect', {
+            'effect': EFFECTS[0], 'effect_source': 'readback',
+            'work_mode': mode, 'work_mode_source': 'readback',
+            'effect_active': not active, 'last_known_work_mode': 1,
+        })
+        assert backend.workMode == mode
+        assert backend.previewKind == kind
+        assert backend.effectActive is active
+        assert backend.previewStateSource == 'readback'
+        assert not backend.colorModeActive
+    finally:
+        backend.close()
+
+
+def test_fresh_work_mode_and_scene_replace_saved_preview_atomically(app, tmp_path):
+    backend = SphereBackend(tmp_path / 'missing.sock', start=False)
+    try:
+        backend._accept('effect', {
+            'effect': EFFECTS[0], 'effect_source': 'saved',
+            'last_known_work_mode': 1,
+        })
+        observed = []
+        backend.stateChanged.connect(lambda: observed.append(
+            (backend.effect.get('slug'), backend.workMode, backend.previewKind)
+        ))
+        backend._accept('effect', {
+            'effect': EFFECTS[2], 'effect_source': 'readback',
+            'work_mode': 0, 'work_mode_source': 'readback',
+        })
+        assert observed == [('color-wheel', 0, 'light')]
+        assert backend.previewStateSource == 'readback'
+        backend._select_device('0x0008')
+        assert backend.workMode is None
+    finally:
+        backend.close()

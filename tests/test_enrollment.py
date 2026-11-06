@@ -709,3 +709,111 @@ async def test_automatic_enrollment_uses_active_scan_and_saves_default_name_with
     assert manager.status()['candidates'][0]['state'] == 'complete'
     await manager.stop()
     assert '0x0100' in manager.state['devices']
+
+async def test_candidate_visible_during_scan_and_inspection(manager, monkeypatch):
+    target = beacon()
+    scanning = asyncio.Event()
+    finish_scan = asyncio.Event()
+    inspecting = asyncio.Event()
+    finish_inspection = asyncio.Event()
+
+    class Scanner:
+        async def stop(self):
+            pass
+
+    async def scan(*args, **kwargs):
+        kwargs["on_discovered"](target)
+        scanning.set()
+        await finish_scan.wait()
+        return [target]
+
+    async def inspect(*args):
+        inspecting.set()
+        await finish_inspection.wait()
+        return None
+
+    manager.transport.scanner = Scanner
+    monkeypatch.setattr(module, "scan_unprovisioned", scan)
+    monkeypatch.setattr(module, "inspect_candidate", inspect)
+    manager.start(30)
+    await scanning.wait()
+    candidate = manager.status()["candidates"][0]
+    assert candidate == {"candidate": target.uuid.hex(), "name": manager._name(target),
+                         "state": "found", "existing_device": None}
+    finish_scan.set()
+    await inspecting.wait()
+    assert manager.status()["candidates"][0]["state"] == "checking"
+    finish_inspection.set()
+    await asyncio.sleep(0)
+    assert manager.status()["candidates"][0]["state"] == "unsupported"
+    await manager.stop()
+
+@pytest.mark.parametrize("blocked_phase", ["inspection", "commission"])
+async def test_new_advertisement_visible_during_gatt_work(manager, monkeypatch, blocked_phase):
+    first = beacon()
+    second = beacon("dc235209a8cf10146430647067613068")
+    second.device.address = "DC:23:52:09:A8:CF"
+    blocked, release = asyncio.Event(), asyncio.Event()
+    inspected, commissioned = [], []
+
+    class Scanner:
+        def __init__(self):
+            self.callbacks = []
+
+        def register_detection_callback(self, callback):
+            self.callbacks.append(callback)
+            return lambda: self.callbacks.remove(callback)
+
+        def advertise(self, target):
+            advertisement = SimpleNamespace(service_data={module.PROVISIONING: target.uuid + bytes(2)})
+            for callback in list(self.callbacks):
+                callback(target.device, advertisement)
+
+        async def stop(self):
+            pass
+
+    scanner = Scanner()
+    manager.transport.scanner = lambda: scanner
+
+    async def scan(*args, **kwargs):
+        return [first]
+
+    async def inspect(transport, target):
+        inspected.append(target.uuid)
+        if blocked_phase == "inspection":
+            blocked.set()
+            await release.wait()
+        return {"firmware_version": "0.5"}
+
+    async def commission(target, details):
+        commissioned.append(target.uuid)
+        if blocked_phase == "commission":
+            blocked.set()
+            await release.wait()
+
+    monkeypatch.setattr(module, "scan_unprovisioned", scan)
+    monkeypatch.setattr(module, "inspect_candidate", inspect)
+    monkeypatch.setattr(manager, "_commission", commission)
+    manager.start(30)
+    await blocked.wait()
+    scanner.advertise(second)
+    candidates = {item["candidate"]: item for item in manager.status()["candidates"]}
+    assert candidates[second.uuid.hex()]["state"] == "found"
+    assert second.uuid not in inspected and second.uuid not in commissioned
+    stopping = asyncio.create_task(manager.stop())
+    await asyncio.sleep(0)
+    release.set()
+    await stopping
+    assert not scanner.callbacks
+    assert second.uuid not in inspected and second.uuid not in commissioned
+
+
+async def test_immediately_found_candidates_reserve_unique_default_names(manager):
+    manager._deadline = manager._now() + 30
+    first, second = beacon(), beacon('aa000012111f50146430647067613068')
+    second.device.address = 'AA:00:00:12:11:1F'
+    manager._discovered(first)
+    manager._discovered(second)
+    names = [item['name'] for item in manager.status()['candidates']]
+    assert len(names) == 2 and len(set(names)) == 2
+    assert not manager.state['devices']  # finding alone never provisions

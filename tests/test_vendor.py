@@ -212,6 +212,124 @@ async def test_vendor_controller_reports_timeout():
         await controller.read([2, 102])
 
 
+async def test_vendor_read_waits_past_bare_mode_and_partial_snapshot():
+    node = Mock()
+    node.received = deque()
+    first = ReceivedMessage(0x0118, OP_TUYA_DP_DATA, b"\x01")
+
+    async def request(*args, **kwargs):
+        node.received.append(first)
+
+        async def deliver():
+            # Longer than the old default settle: mode and DP7 are not
+            # evidence that the requested scene record has arrived.
+            for params in ("01070200000000", "01650200000000", "0166041c"):
+                await asyncio.sleep(0.06)
+                node.received.append(ReceivedMessage(
+                    0x0118, OP_TUYA_DP_DATA, bytes.fromhex(params)
+                ))
+
+        asyncio.create_task(deliver())
+        return first
+
+    node.request = AsyncMock(side_effect=request)
+    result = await TuyaVendorController(node, COMPOSITION, timeout=0.5).read([2, 102])
+    assert [(record.dp_id, record.value) for record in result.records] == [
+        (7, 0), (101, 0), (102, 28),
+    ]
+
+
+async def test_vendor_read_returns_partial_snapshot_at_collection_deadline():
+    node = Mock()
+    first = ReceivedMessage(0x0118, OP_TUYA_DP_DATA, b"\x01")
+    node.received = deque([first])
+    node.request = AsyncMock(return_value=first)
+    result = await TuyaVendorController(
+        node, COMPOSITION, timeout=0.02, response_settle=0
+    ).read([102])
+    assert result.records == ()
+    assert result.work_mode is None
+
+
+@pytest.mark.parametrize("mode", range(5))
+async def test_vendor_read_decodes_bare_mode_only_with_complete_snapshot(mode):
+    node = Mock(received=deque())
+    first = ReceivedMessage(0x0118, OP_TUYA_DP_DATA, bytes([mode]))
+
+    async def request(*args, **kwargs):
+        node.received.append(first)
+
+        async def deliver():
+            for params in (
+                "01070200000000", "01650200000000", "01660402",
+                "01670200000064", "01680100",
+            ):
+                await asyncio.sleep(0.01)
+                node.received.append(ReceivedMessage(
+                    0x0118, OP_TUYA_DP_DATA, bytes.fromhex(params)
+                ))
+
+        asyncio.create_task(deliver())
+        return first
+
+    node.request = AsyncMock(side_effect=request)
+    result = await TuyaVendorController(
+        node, COMPOSITION, timeout=0.3, response_settle=0
+    ).read([2, 102])
+    assert result.work_mode == mode
+    assert [record.dp_id for record in result.records] == [7, 101, 102, 103, 104]
+
+
+@pytest.mark.parametrize("mode,include_dp7", [(1, False), (5, True)])
+async def test_vendor_read_does_not_guess_mode_from_incomplete_or_invalid_burst(mode, include_dp7):
+    node = Mock(received=deque())
+    first = ReceivedMessage(0x0118, OP_TUYA_DP_DATA, bytes([mode]))
+    # Require both a valid mode byte and the complete record signature.
+    messages = [
+        first,
+        *([ReceivedMessage(0x0118, OP_TUYA_DP_DATA, bytes.fromhex("01070200000000"))]
+          if include_dp7 else []),
+        *(ReceivedMessage(0x0118, OP_TUYA_DP_DATA, bytes.fromhex(params))
+          for params in ("01650200000000", "01660402",
+                         "01670200000064", "01680100")),
+    ]
+
+    async def request(*args, **kwargs):
+        node.received.extend(messages)
+        return first
+
+    node.request = AsyncMock(side_effect=request)
+    result = await TuyaVendorController(
+        node, COMPOSITION, timeout=0.01, response_settle=0
+    ).read([2, 102])
+    assert result.work_mode is None
+
+
+async def test_vendor_read_still_collects_after_slow_first_response():
+    node = Mock()
+    node.received = deque()
+    first = ReceivedMessage(0x0118, OP_TUYA_DP_DATA, b"\x01")
+
+    async def request(*args, **kwargs):
+        await asyncio.sleep(0.04)
+        node.received.append(first)
+
+        async def deliver():
+            await asyncio.sleep(0.01)
+            node.received.append(ReceivedMessage(
+                0x0118, OP_TUYA_DP_DATA, bytes.fromhex("01660402")
+            ))
+
+        asyncio.create_task(deliver())
+        return first
+
+    node.request = AsyncMock(side_effect=request)
+    result = await TuyaVendorController(
+        node, COMPOSITION, timeout=0.03, response_settle=0
+    ).read([102])
+    assert [(record.dp_id, record.value) for record in result.records] == [(102, 2)]
+
+
 async def test_vendor_controller_reads_complete_bursts_after_history_wraps():
     node = Mock()
     node.received = deque(
@@ -277,6 +395,7 @@ async def test_vendor_controller_write_accepts_empty_ack_only():
     controller = TuyaVendorController(node, COMPOSITION, response_settle=0)
     result = await controller.write({2: 1})
     assert result.records == ()
+    assert result.work_mode is None
 
 
 async def test_vendor_controller_collects_burst_when_receive_history_is_full():

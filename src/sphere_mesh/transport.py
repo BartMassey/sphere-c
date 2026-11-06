@@ -86,11 +86,13 @@ class GattBearer(UpstreamGattBearer):
         self._data_out = _characteristic_for_service(client, service, data_out)
 
 
-def _fresh_discoveries(scanner: Any) -> tuple[dict[str, tuple[Any, Any]], Any]:
+def _fresh_discoveries(scanner: Any, on_detection: Callable | None = None) -> tuple[dict[str, tuple[Any, Any]], Any]:
     discoveries: dict[str, tuple[Any, Any]] = {}
 
     def detected(device: Any, advertisement_data: Any) -> None:
         discoveries[device.address] = (device, advertisement_data)
+        if on_detection is not None:
+            on_detection(device, advertisement_data)
 
     register = getattr(scanner, "register_detection_callback", None)
     if not callable(register):
@@ -104,6 +106,21 @@ def _fresh_discoveries(scanner: Any) -> tuple[dict[str, tuple[Any, Any]], Any]:
     return scanner.discovered_devices_and_advertisement_data, None
 
 
+def watch_unprovisioned(scanner: Any, on_discovered: Callable):
+    """Observe advertisements until the returned unsubscribe callback is called.
+
+    Return None when the scanner does not support detection callbacks.
+    """
+    def detected(device, advertisement):
+        for beacon in unprovisioned_from_discoveries({device.address: (device, advertisement)}):
+            on_discovered(beacon)
+
+    register = getattr(scanner, "register_detection_callback", None)
+    if not callable(register):
+        register = getattr(getattr(scanner, "_backend", None), "register_detection_callback", None)
+    return register(detected) if callable(register) else None
+
+
 async def scan_unprovisioned(
     scanner: Any,
     timeout: float = 10.0,
@@ -112,14 +129,26 @@ async def scan_unprovisioned(
     stop_on_any: bool = False,
     poll_interval: float = 0.5,
     stop_after: bool = True,
+    on_discovered: Callable | None = None,
 ):
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
-    discoveries, remove_callback = _fresh_discoveries(scanner)
-    await scanner.start()
+
+    def detected(device, advertisement):
+        if on_discovered is not None:
+            for beacon in unprovisioned_from_discoveries({device.address: (device, advertisement)}):
+                on_discovered(beacon)
+
+    discoveries, remove_callback = _fresh_discoveries(scanner, detected)
+    started = False
     try:
+        await scanner.start()
+        started = True
         while True:
             found = unprovisioned_from_discoveries(discoveries)
+            if remove_callback is None and on_discovered is not None:
+                for beacon in found:
+                    on_discovered(beacon)
             if stop_on is not None and any(device.uuid == stop_on for device in found):
                 return found
             if stop_on_any and found:
@@ -130,7 +159,7 @@ async def scan_unprovisioned(
     finally:
         if remove_callback is not None:
             remove_callback()
-        if stop_after:
+        if stop_after and started:
             await scanner.stop()
 
 

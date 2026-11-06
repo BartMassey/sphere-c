@@ -15,6 +15,12 @@ ApplicationWindow {
 
     property int currentPage: 0
     property string effectCategory: "pattern"
+    property string displayedDevice: ""
+    property bool synchronizeSource: false
+    readonly property bool previewBrightnessKnown: (sphere.effectActive || sphere.colorModeActive)
+        ? (sphere.hsl || ({})).lightness !== undefined
+        : sphere.lightness !== null && sphere.lightness !== undefined
+    readonly property real currentPreviewBrightness: previewBrightnessKnown ? brightnessSlider.previewValue : 50
     readonly property bool darkMode: systemPalette.window.hslLightness < 0.5
     readonly property color canvasColor: darkMode ? "#111a2a" : "#f5f7fb"
     readonly property color cardColor: darkMode ? "#1b2940" : "#ffffff"
@@ -31,7 +37,7 @@ ApplicationWindow {
     readonly property color previewColor: sphere.power === true && capability("hsl")
                                           ? Qt.hsva(hueSlider.previewValue / 360,
                                                     saturationSlider.previewValue / 100,
-                                                    root.previewBrightness(brightnessSlider.previewValue), 1)
+                                                    root.previewBrightness(currentPreviewBrightness), 1)
                                           : accent
 
     color: canvasColor
@@ -62,6 +68,48 @@ ApplicationWindow {
     function effectLabel() {
         var selection = sphere.effect || ({})
         return selection.label || ""
+    }
+
+    function synchronizePreviewSource() {
+        if (displayedDevice !== sphere.selectedDevice) {
+            displayedDevice = sphere.selectedDevice
+            synchronizeSource = !!displayedDevice
+        }
+        if (!synchronizeSource || !sphere.connected || sphere.previewKind === "unknown")
+            return
+        if (sphere.previewKind === "effect") {
+            var media = currentEffectMedia()
+            if (!media.slug)
+                return
+            effectCategory = media.category || "pattern"
+            effectSearch.text = ""
+            currentPage = 1
+            Qt.callLater(function() {
+                var view = effectsScroll.contentItem
+                if (!view || view.contentY === undefined)
+                    return
+                for (var index = 0; index < effectRepeater.count; ++index) {
+                    var tile = effectRepeater.itemAt(index)
+                    if (tile && tile.effectSlug === (sphere.effect || ({})).slug) {
+                        var point = tile.mapToItem(view.contentItem, 0, 0)
+                        view.contentY = Math.max(0, Math.min(point.y - 12,
+                                            view.contentHeight - view.height))
+                        break
+                    }
+                }
+            })
+        } else {
+            currentPage = 0
+        }
+        synchronizeSource = false
+    }
+
+    Component.onCompleted: root.synchronizePreviewSource()
+
+    Connections {
+        target: sphere
+        function onStateChanged() { root.synchronizePreviewSource() }
+        function onEffectsChanged() { root.synchronizePreviewSource() }
     }
 
     function brightnessPosition(lightness) {
@@ -124,34 +172,6 @@ ApplicationWindow {
         } catch (error) {
             return String(details)
         }
-    }
-
-    function nameAvailable(name, exceptDevice) {
-        var normalized = name.trim().toLocaleLowerCase()
-        if (!normalized)
-            return false
-        var devices = sphere.devices || []
-        for (var i = 0; i < devices.length; ++i) {
-            if (devices[i].device !== exceptDevice
-                    && String(devices[i].name || "").trim().toLocaleLowerCase() === normalized)
-                return false
-        }
-        var candidates = (sphere.enrollment || ({})).candidates || []
-        for (var j = 0; j < candidates.length; ++j) {
-            if (candidates[j].name && candidates[j].state !== "awaiting_name"
-                    && String(candidates[j].name).trim().toLocaleLowerCase() === normalized)
-                return false
-        }
-        return true
-    }
-
-    function enrollmentHasState(state) {
-        var candidates = (sphere.enrollment || ({})).candidates || []
-        for (var i = 0; i < candidates.length; ++i) {
-            if (candidates[i].state === state)
-                return true
-        }
-        return false
     }
 
     function selectedDeviceIndex() {
@@ -424,7 +444,8 @@ ApplicationWindow {
                         Layout.preferredHeight: Layout.preferredWidth
                         readonly property var media: root.currentEffectMedia()
                         readonly property bool showEffect: sphere.connected && sphere.power === true
-                                                           && sphere.effectActive && !!media.stillUrl
+                                                           && sphere.effectActive
+                                                           && (!!media.stillUrl || !!media.animationUrl)
 
                         Rectangle {
                             objectName: "mainPreviewOff"
@@ -437,8 +458,10 @@ ApplicationWindow {
                             objectName: "mainPreviewIllustration"
                             anchors.fill: parent
                             visible: sphere.power !== false && (!parent.showEffect || !mainRecording.ready)
-                            sphereColor: root.previewColor
+                            sphereColor: sphere.previewKind === "unknown"
+                                         ? root.muted : root.previewColor
                             active: sphere.power === true && sphere.connected
+                                    && sphere.previewKind !== "unknown"
                         }
 
                         RecordedPreview {
@@ -449,7 +472,7 @@ ApplicationWindow {
                             stillUrl: visible ? parent.media.stillUrl || "" : ""
                             animationUrl: visible ? parent.media.animationUrl || "" : ""
                             animate: visible
-                            gain: root.effectPreviewBrightness(brightnessSlider.previewValue)
+                            gain: root.effectPreviewBrightness(root.currentPreviewBrightness)
                         }
                     }
 
@@ -468,8 +491,13 @@ ApplicationWindow {
                             objectName: "sphereStateLabel"
                             Layout.fillWidth: true
                             text: !sphere.connected || sphere.power !== true ? qsTr("Light off")
-                                  : sphere.effectActive || sphere.colorModeActive ? root.effectLabel()
-                                  : qsTr("Light on")
+                                  : (sphere.effectActive || sphere.colorModeActive) && root.effectLabel() !== ""
+                                    ? (sphere.previewStateSource === "saved"
+                                       ? qsTr("Last known: %1").arg(root.effectLabel()) : root.effectLabel())
+                                  : sphere.workMode === 2 ? qsTr("Scene mode")
+                                  : sphere.workMode === 3 ? qsTr("Music mode")
+                                  : sphere.workMode === 4 ? qsTr("Mode 4")
+                                  : sphere.previewKind === "unknown" ? qsTr("Scene unavailable") : qsTr("Light on")
                             elide: Text.ElideRight
                             color: root.muted
                             font.pixelSize: 11
@@ -577,6 +605,7 @@ ApplicationWindow {
                                     objectName: "applyColorButton"
                                     text: qsTr("Color")
                                     flat: true
+                                    highlighted: sphere.colorModeActive
                                     enabled: root.controlsReady && root.capability("hsl")
                                              && root.capability("effects")
                                     font.pixelSize: 15
@@ -782,7 +811,7 @@ ApplicationWindow {
                                             animationUrl: modelData.animationUrl || ""
                                             animate: root.currentPage === 1
                                                      && (tileMouse.containsMouse || effectTile.activeFocus || selected)
-                                            gain: root.effectPreviewBrightness(brightnessSlider.previewValue)
+                                            gain: root.effectPreviewBrightness(50)
                                         }
 
                                         Label {
@@ -1028,247 +1057,13 @@ ApplicationWindow {
             }
         }
     }
-    Dialog {
+    ManageSpheresDialog {
         id: manageDialog
-        objectName: "manageSpheresDialog"
-        title: qsTr("Manage Spheres")
-        modal: true
-        anchors.centerIn: parent
-        width: Math.min(root.width - 24, 420)
-        height: Math.min(root.height - 40, 650)
-        standardButtons: Dialog.Close
-        onOpened: sphere.refreshDevices()
-        onClosed: sphere.stopEnrollment()
-
-        ScrollView {
-            id: managementScroll
-            anchors.fill: parent
-            clip: true
-            ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
-
-            ColumnLayout {
-                width: managementScroll.availableWidth
-                spacing: 12
-
-                Label {
-                    Layout.fillWidth: true
-                    text: qsTr("Your Spheres")
-                    font.pixelSize: 16
-                    font.weight: Font.DemiBold
-                    color: root.foreground
-                }
-
-                Label {
-                    Layout.fillWidth: true
-                    visible: (sphere.devices || []).length === 0
-                    text: qsTr("No Spheres enrolled yet.")
-                    color: root.muted
-                    wrapMode: Text.WordWrap
-                }
-
-                Repeater {
-                    model: sphere.devices || []
-                    delegate: Rectangle {
-                        required property var modelData
-                        Layout.fillWidth: true
-                        implicitHeight: deviceRow.implicitHeight + 20
-                        radius: 12
-                        color: root.cardColor
-                        border.color: root.borderColor
-                        RowLayout {
-                            id: deviceRow
-                            anchors.fill: parent
-                            anchors.margins: 10
-                            Label {
-                                Layout.fillWidth: true
-                                text: modelData.name || qsTr("Unnamed Sphere")
-                                color: root.foreground
-                                elide: Text.ElideRight
-                            }
-                            Button {
-                                text: qsTr("Rename")
-                                flat: true
-                                enabled: sphere.serviceAvailable && !sphere.managementPending
-                                         && !(sphere.enrollment || ({})).active
-                                onClicked: {
-                                    renameDialog.device = modelData.device
-                                    renameField.text = modelData.name || ""
-                                    renameDialog.open()
-                                }
-                            }
-                            Button {
-                                text: qsTr("Forget")
-                                flat: true
-                                enabled: sphere.serviceAvailable && !sphere.managementPending
-                                         && !(sphere.enrollment || ({})).active
-                                onClicked: {
-                                    forgetDialog.device = modelData.device
-                                    forgetDialog.deviceName = modelData.name || qsTr("this Sphere")
-                                    forgetDialog.open()
-                                }
-                            }
-                        }
-                    }
-                }
-
-                Label {
-                    Layout.fillWidth: true
-                    text: qsTr("Add a Sphere")
-                    font.pixelSize: 16
-                    font.weight: Font.DemiBold
-                    color: root.foreground
-                    Layout.topMargin: 8
-                }
-                Label {
-                    Layout.fillWidth: true
-                    text: qsTr("Put each Sphere into pairing mode with three quick presses, then start enrollment. Compatible 0.5 Spheres are enrolled automatically with unique default names. You can rename them afterward.")
-                    color: root.muted
-                    wrapMode: Text.WordWrap
-                }
-                Button {
-                    objectName: "enrollmentToggle"
-                    text: (sphere.enrollment || ({})).active ? qsTr("Stop enrollment") : qsTr("Enroll nearby Spheres")
-                    enabled: sphere.serviceAvailable && !sphere.managementPending
-                    onClicked: {
-                        if ((sphere.enrollment || ({})).active)
-                            sphere.stopEnrollment()
-                        else
-                            sphere.startEnrollment()
-                    }
-                }
-                Label {
-                    Layout.fillWidth: true
-                    visible: !!(sphere.enrollment || ({})).active
-                    objectName: "enrollmentProgress"
-                    text: (root.enrollmentHasState("recovering") ? qsTr("Finishing setup…")
-                           : (sphere.enrollment || ({})).phase === "checking" ? qsTr("Checking compatibility…")
-                           : (sphere.enrollment || ({})).phase === "provisioning"
-                             || (sphere.enrollment || ({})).phase === "configuring"
-                             || root.enrollmentHasState("provisioning") ? qsTr("Provisioning…")
-                           : qsTr("Discovering…"))
-                          + " " + qsTr("%1 seconds remaining. Stopping enrollment finishes provisioning already started.").arg((sphere.enrollment || ({})).remaining_seconds || 0)
-                    color: root.muted
-                    wrapMode: Text.WordWrap
-                }
-                Repeater {
-                    model: sphere.enrollmentCandidates || []
-                    delegate: ColumnLayout {
-                        required property var modelData
-                        Layout.fillWidth: true
-                        spacing: 3
-                        Label {
-                            objectName: "candidateName"
-                            Layout.fillWidth: true
-                            text: modelData.name || qsTr("Sphere")
-                            color: root.foreground
-                            wrapMode: Text.WordWrap
-                        }
-                        Label {
-                            Layout.fillWidth: true
-                            objectName: "candidateStatus"
-                            text: modelData.state === "failed" || modelData.state === "error"
-                                  ? ((sphere.enrollment || ({})).active
-                                     ? qsTr("Could not finish after several attempts. Enrollment continues for other Spheres; stop and start enrollment to retry this one.")
-                                     : qsTr("Could not finish. Start discovery to retry."))
-                                  : modelData.state === "retrying"
-                                    ? qsTr("Connection interrupted. Retrying automatically…")
-                                  : modelData.state === "recovering"
-                                    ? ((sphere.enrollment || ({})).active
-                                       ? qsTr("Network details saved. Finishing setup automatically; leave this Sphere on.")
-                                       : qsTr("Network details saved. Start discovery to resume setup; leave this Sphere on."))
-                                  : modelData.state === "complete" || modelData.state === "enrolled"
-                                    ? qsTr("Enrolled")
-                                  : modelData.state === "checking" ? qsTr("Checking compatibility…")
-                                  : modelData.state === "provisioning" ? qsTr("Provisioning…")
-                                  : qsTr("Enrollment in progress…")
-                            color: modelData.state === "failed" || modelData.state === "error" ? root.danger : root.muted
-                            wrapMode: Text.WordWrap
-                        }
-                    }
-                }
-                Label {
-                    Layout.fillWidth: true
-                    visible: !!sphere.managementError || (((sphere.enrollment || ({})).errors || []).length > 0
-                             && !root.enrollmentHasState("recovering") && !root.enrollmentHasState("complete")
-                             && !root.enrollmentHasState("retrying")
-                             && !root.enrollmentHasState("failed"))
-                    text: sphere.managementError || qsTr("Enrollment failed. Please try again.")
-                    color: root.danger
-                    wrapMode: Text.WordWrap
-                }
-                Label {
-                    Layout.fillWidth: true
-                    visible: !sphere.serviceAvailable
-                    text: qsTr("The Sphere service is unavailable.")
-                    color: root.danger
-                    wrapMode: Text.WordWrap
-                }
-            }
-        }
+        backend: sphere
+        foreground: root.foreground
+        muted: root.muted
+        cardColor: root.cardColor
+        borderColor: root.borderColor
+        danger: root.danger
     }
-
-    Dialog {
-        id: renameDialog
-        property string device: ""
-        title: qsTr("Rename Sphere")
-        modal: true
-        anchors.centerIn: parent
-        width: Math.min(root.width - 32, 360)
-        standardButtons: Dialog.Cancel
-        ColumnLayout {
-            anchors.fill: parent
-            TextField {
-                id: renameField
-                Layout.fillWidth: true
-                placeholderText: qsTr("Sphere name")
-                maximumLength: 64
-                Accessible.name: qsTr("Sphere name")
-            }
-            Label {
-                Layout.fillWidth: true
-                visible: renameField.text.trim().length > 0 && !root.nameAvailable(renameField.text, renameDialog.device)
-                text: qsTr("Choose a unique name.")
-                color: root.danger
-                wrapMode: Text.WordWrap
-            }
-            Button {
-                text: qsTr("Save")
-                enabled: sphere.serviceAvailable && !sphere.managementPending
-                         && root.nameAvailable(renameField.text, renameDialog.device)
-                onClicked: {
-                    sphere.renameDevice(renameDialog.device, renameField.text.trim())
-                    renameDialog.close()
-                }
-            }
-        }
-    }
-
-    Dialog {
-        id: forgetDialog
-        property string device: ""
-        property string deviceName: ""
-        title: qsTr("Forget Sphere?")
-        modal: true
-        anchors.centerIn: parent
-        width: Math.min(root.width - 32, 360)
-        standardButtons: Dialog.Cancel
-        ColumnLayout {
-            anchors.fill: parent
-            Label {
-                Layout.fillWidth: true
-                text: qsTr("Forget %1 locally? This does not reset the physical Sphere. To pair it again, put it in pairing mode with three quick presses.").arg(forgetDialog.deviceName)
-                color: root.foreground
-                wrapMode: Text.WordWrap
-            }
-            Button {
-                text: qsTr("Forget")
-                enabled: sphere.serviceAvailable && !sphere.managementPending
-                onClicked: {
-                    sphere.forgetDevice(forgetDialog.device)
-                    forgetDialog.close()
-                }
-            }
-        }
-    }
-
 }

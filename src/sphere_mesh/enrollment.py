@@ -22,6 +22,7 @@ from .provision import configure, provision
 from .transport import (
     disconnect_quietly, find_proxy_node, open_mesh_proxy_session,
     scan_unprovisioned,
+    watch_unprovisioned,
 )
 
 
@@ -253,6 +254,8 @@ class EnrollmentManager:
             return previous[-1]["name"]
         base = "Sphere " + beacon.device.address.replace(":", "")[-6:].upper()
         names = {str(entry.get("name", "")).casefold() for entry in self.state["devices"].values()}
+        names.update(str(item.get("name", "")).casefold()
+                     for identity, item in self._candidates.items() if identity != beacon.uuid.hex())
         name, suffix = base, 2
         while name.casefold() in names:
             name = f"{base} {suffix}"
@@ -374,10 +377,12 @@ class EnrollmentManager:
         """
         scanner = self.transport.scanner()
         completed = False
+        unsubscribe = watch_unprovisioned(scanner, self._discovered)
         try:
             beacons = await scan_unprovisioned(
                 scanner, timeout=min(10, max(0, self._deadline - self._now())),
                 stop_on=bytes.fromhex(identity), stop_after=False,
+                on_discovered=self._discovered if unsubscribe is None else None,
             )
             if not self._window_open():
                 item["state"] = "awaiting_name"
@@ -394,6 +399,8 @@ class EnrollmentManager:
             return True
         finally:
             original_error = sys.exception()
+            if unsubscribe is not None:
+                unsubscribe()
             try:
                 await scanner.stop()
             except Exception as exc:
@@ -424,6 +431,28 @@ class EnrollmentManager:
         item["state"] = "complete"
         self._errors = [error for error in self._errors
                         if error["address"] != item["beacon"].device.address]
+
+    def _discovered(self, beacon) -> None:
+        """Publish a likely Sphere as soon as its advertisement arrives."""
+        identity = beacon.uuid.hex()
+        if (not self._window_open() or not sphere_uuid(beacon.uuid)
+                or identity in self._rejected or identity in self._completed
+                or identity in self._candidates):
+            return
+        if any(entry.get("enrollment_pending") and not entry.get("superseded_by")
+               and (entry.get("uuid") == identity or
+                    entry.get("address", "").lower() == beacon.device.address.lower())
+               for entry in self.state["devices"].values()):
+            return
+        existing = next(((key, entry) for key, entry in self.state["devices"].items()
+                         if not entry.get("superseded_by") and not entry.get("forgotten")
+                         and (entry.get("uuid") == identity or
+                              entry.get("address", "").lower() == beacon.device.address.lower())), None)
+        self._candidates[identity] = {
+            "beacon": beacon, "details": None,
+            "name": existing[1].get("name", "") if existing else self._name(beacon),
+            "existing_device": existing[0] if existing else None, "state": "found",
+        }
 
     async def _run_passes(self) -> None:
         try:
@@ -462,7 +491,7 @@ class EnrollmentManager:
                         break
                     if not self._window_open():
                         break
-                    for identity, item in self._candidates.items():
+                    for identity, item in list(self._candidates.items()):
                         if not self._window_open():
                             break
                         if item["state"] not in ("queued", "retrying"):
@@ -482,52 +511,41 @@ class EnrollmentManager:
                         break
                     self._phase = "scanning"
                     scanner = self.transport.scanner()
+                    unsubscribe = watch_unprovisioned(scanner, self._discovered)
                     try:
                         beacons = await scan_unprovisioned(
                             scanner, timeout=min(3, self._deadline - self._now()),
                             stop_after=False,
+                            on_discovered=self._discovered if unsubscribe is None else None,
                         )
                         for beacon in beacons:
                             if not self._window_open():
                                 break
                             identity = beacon.uuid.hex()
-                            if (identity in self._rejected or identity in self._completed
-                                    or identity in self._candidates
-                                    or not sphere_uuid(beacon.uuid)):
+                            self._discovered(beacon)
+                            item = self._candidates.get(identity)
+                            if item is None or item["state"] != "found":
                                 continue
-                            # A Data PDU may have reached the lamp even when
-                            # Complete was lost. Preserve its reserved address
-                            # and key, and attempt configuration recovery only.
-                            # A stale beacon must not allocate another identity.
-                            if any(entry.get("enrollment_pending")
-                                   and not entry.get("superseded_by")
-                                   and (entry.get("uuid") == identity or
-                                        entry.get("address", "").lower() == beacon.device.address.lower())
-                                   for entry in self.state["devices"].values()):
-                                continue
+                            item["beacon"] = beacon
+                            item["state"] = "checking"
                             self._phase = "checking"
                             try:
                                 details = await inspect_candidate(self.transport, beacon)
                                 if details is None:
                                     self._rejected.add(identity)
+                                    item["state"] = "unsupported"
                                     continue
+                                item["details"] = details
                                 if not self._window_open():
+                                    item["state"] = "found"
                                     break
                                 if self._require_names:
-                                    existing = next(((key, entry) for key, entry in self.state["devices"].items()
-                                                     if not entry.get("superseded_by") and not entry.get("forgotten")
-                                                     and (entry.get("uuid") == identity or
-                                                          entry.get("address", "").lower() == beacon.device.address.lower())), None)
-                                    self._candidates[identity] = {"beacon": beacon, "details": details,
-                                                                  "name": existing[1].get("name", "") if existing else "",
-                                                                  "existing_device": existing[0] if existing else None,
-                                                                  "state": "awaiting_name"}
+                                    if item["existing_device"] is None:
+                                        item["name"] = ""
+                                    item["state"] = "awaiting_name"
                                     continue
                                 self._phase = "provisioning"
-                                item = {"beacon": beacon, "details": details,
-                                        "name": self._name(beacon), "existing_device": None,
-                                        "state": "provisioning"}
-                                self._candidates[identity] = item
+                                item["state"] = "provisioning"
                                 self._candidate_attempts[identity] = 1
                                 try:
                                     # The discovery scanner is still active:
@@ -537,8 +555,11 @@ class EnrollmentManager:
                                 except Exception as exc:
                                     self._candidate_failed(identity, item, exc)
                             except Exception as exc:
+                                item["state"] = "found"
                                 self._error(beacon.device.address, exc)
                     finally:
+                        if unsubscribe is not None:
+                            unsubscribe()
                         await scanner.stop()
                 # Yield between scans. With a per-pass lease, the supervisor
                 # and ordinary commands can run; a whole-window lease keeps

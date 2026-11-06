@@ -333,6 +333,28 @@ class SphereRuntime:
         self._command_lock = asyncio.Lock()
         self._work_mode: int | None = None
         self._work_mode_generation = supervisor.generation
+        entry = state.get("devices", {}).get(f"0x{unicast:04x}", {})
+        saved = entry.get("last_preview", {})
+        saved = saved if isinstance(saved, dict) else {}
+        value = saved.get("effect_value")
+        mode = saved.get("work_mode")
+        self._effect_value = value if type(value) is int and 0 <= value <= 31 else None
+        self._effect_source = "saved" if self._effect_value is not None else None
+        self._last_known_work_mode = mode if type(mode) is int and 0 <= mode <= 4 else None
+
+    def _save_preview(self) -> None:
+        """Store only last acknowledged preview metadata for an existing device."""
+        entry = self._state.get("devices", {}).get(f"0x{self._unicast:04x}")
+        if not isinstance(entry, dict):
+            return
+        if self._effect_value is None:
+            if entry.pop("last_preview", None) is None:
+                return
+        else:
+            entry["last_preview"] = {"effect_value": self._effect_value}
+            if self._last_known_work_mode is not None:
+                entry["last_preview"]["work_mode"] = self._last_known_work_mode
+        self._store.save(self._state)
 
     def _composition(self) -> dict:
         """Use this node's metadata, falling back only for the legacy target."""
@@ -587,7 +609,11 @@ class SphereRuntime:
     @staticmethod
     def _vendor_snapshot(data, dp_ids: list[int]) -> dict:
         returned_ids = {record.dp_id for record in data.records}
+        if data.work_mode is not None:
+            returned_ids.add(2)
         return {
+            **({"work_mode": data.work_mode, "work_mode_encoding": "bare_snapshot"}
+               if data.work_mode is not None else {}),
             "command_type": data.command_type,
             "requested_dp_ids": dp_ids,
             "missing_dp_ids": [
@@ -705,6 +731,10 @@ class SphereRuntime:
                 values = effect_selection(params["name"])
             except ValueError as exc:
                 raise ApiRequestError("invalid_params", str(exc)) from exc
+            # A failed or contradictory write leaves the physical selection uncertain.
+            self._effect_value = None
+            self._effect_source = None
+            self._save_preview()
         controller = TuyaVendorController(
             session.node, self._composition()
         )
@@ -721,6 +751,8 @@ class SphereRuntime:
                         controller.write({2: values[2]}),
                     )
                 except (VendorUnavailable, VendorUnsupported, AccessError) as exc:
+                    self._work_mode = None
+                    self._last_known_work_mode = None
                     code = (
                         "unavailable" if isinstance(exc, VendorUnavailable)
                         else "unsupported" if isinstance(exc, VendorUnsupported)
@@ -740,6 +772,8 @@ class SphereRuntime:
                         record.dp_type is not TuyaDpType.ENUM
                         or record.value != values[2]
                     ):
+                        self._work_mode = None
+                        self._last_known_work_mode = None
                         raise ApiRequestError(
                             "protocol_error",
                             "Sphere reported a different DP 2 mode than requested",
@@ -750,6 +784,7 @@ class SphereRuntime:
                             },
                         )
                 self._work_mode = values[2]
+                self._last_known_work_mode = values[2]
                 try:
                     await asyncio.sleep(EFFECT_MODE_SETTLE_SECONDS)
                     for attempt in range(2):
@@ -797,10 +832,10 @@ class SphereRuntime:
             raise ApiRequestError("protocol_error", str(exc)) from exc
         snapshot = self._vendor_snapshot(data, [2, 102])
         effect = None
-        reported_work_mode = None
+        reported_work_mode = data.work_mode
         for record in reversed(data.records):
             if record.dp_id == 2:
-                if record.dp_type is not TuyaDpType.ENUM or not 0 <= record.value <= 3:
+                if record.dp_type is not TuyaDpType.ENUM or not 0 <= record.value <= 4:
                     raise ApiRequestError(
                         "protocol_error", "invalid DP 2 work mode response"
                     )
@@ -815,10 +850,21 @@ class SphereRuntime:
         if method == "effect.get":
             if reported_work_mode is not None:
                 self._work_mode = reported_work_mode
+                self._last_known_work_mode = reported_work_mode
+            effect_reported = effect is not None
+            if effect_reported:
+                self._effect_value = effect["value"]
+                self._effect_source = "cached"
+            elif self._effect_value is not None:
+                effect = effect_catalog()[self._effect_value]
+            if effect_reported or reported_work_mode is not None:
+                self._save_preview()
             work_mode = self._work_mode
             return {
                 "effect": effect,
+                "effect_source": "readback" if effect_reported else self._effect_source,
                 "work_mode": work_mode,
+                "last_known_work_mode": self._last_known_work_mode,
                 "effect_active": None if work_mode is None else work_mode == 1,
                 "work_mode_source": (
                     "readback" if reported_work_mode is not None
@@ -826,7 +872,7 @@ class SphereRuntime:
                 ),
                 "snapshot": snapshot,
                 "verification": _verification(
-                    reported=effect is not None, readback=True
+                    reported=effect_reported, readback=True
                 ),
             }
         if effect is not None and effect["value"] != values[102]:
@@ -844,6 +890,9 @@ class SphereRuntime:
                     if method == "effect.activate" else None
                 ),
             )
+        self._effect_value = values[102]
+        self._effect_source = "cached"
+        self._save_preview()
         result = {
             "requested_effect": effect_name(values[102]),
             "acknowledged": True,

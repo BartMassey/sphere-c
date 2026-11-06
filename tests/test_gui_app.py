@@ -135,7 +135,7 @@ assert main_animation.property("frameCount") > 1
 frame = main_animation.property("currentFrame")
 QTest.qWait(160)
 assert main_animation.property("currentFrame") != frame
-backend._put(effectActive=False)
+backend._put(effectActive=False, previewKind="light")
 app.processEvents()
 assert state_label.property("text") == "Light on"
 assert not main_recording.property("visible")
@@ -287,16 +287,16 @@ brightness_slider = root.findChild(QObject, "brightnessSlider")
 dimming = by_slug["effect-2"].findChild(QObject, "effectPreviewRendering")
 brightness_slider.setProperty("previewValue", 100)
 app.processEvents()
-assert abs(dimming.property("gain") - 3.4) < 1e-6
+assert abs(dimming.property("gain") - 1.8) < 1e-6
 brightness_slider.setProperty("previewValue", 0)
 app.processEvents()
-assert abs(dimming.property("gain") - 0.2) < 1e-6
+assert abs(dimming.property("gain") - 1.8) < 1e-6
 brightness_slider.setProperty("previewValue", 50)
 app.processEvents()
 assert abs(dimming.property("gain") - 1.8) < 1e-6
 brightness_slider.setProperty("previewValue", 25)
 app.processEvents()
-assert abs(dimming.property("gain") - 1) < 1e-6
+assert abs(dimming.property("gain") - 1.8) < 1e-6
 
 assert grid.property("height") > root.findChild(QObject, "effectsScroll").property("height")
 root.setProperty("width", 320)
@@ -336,10 +336,10 @@ assert loader.property("active")
 animation_dimming = animated.findChild(QObject, "effectPreviewRendering")
 brightness_slider.setProperty("previewValue", 0)
 app.processEvents()
-assert abs(animation_dimming.property("gain") - 0.2) < 1e-6
+assert abs(animation_dimming.property("gain") - 1.8) < 1e-6
 brightness_slider.setProperty("previewValue", 100)
 app.processEvents()
-assert abs(animation_dimming.property("gain") - 3.4) < 1e-6
+assert abs(animation_dimming.property("gain") - 1.8) < 1e-6
 assert len(calls) == 1
 root.setProperty("currentPage", 0)
 app.processEvents()
@@ -385,14 +385,14 @@ with tempfile.TemporaryDirectory() as directory:
     selector = root.findChild(QObject, 'deviceSelector')
     assert selector.property('count') == 2
     assert selector.property('currentText') == 'ARI'
-    assert root.nameAvailable('CYR', '')
-    assert not root.nameAvailable(' ari ', '')
-    assert root.nameAvailable('BEN', '0x0131')
     button = root.findChild(QObject, 'manageSpheresButton')
     assert QMetaObject.invokeMethod(button, 'click')
     app.processEvents()
     dialog = root.findChild(QObject, 'manageSpheresDialog')
     assert dialog.property('visible')
+    assert dialog.nameAvailable('CYR', '')
+    assert not dialog.nameAvailable(' ari ', '')
+    assert dialog.nameAvailable('BEN', '0x0131')
     def find_visual(item, name):
         if item.objectName() == name:
             return item

@@ -567,3 +567,19 @@ async def test_find_proxy_node_matches_verified_node_identity():
     assert match is not None
     assert match.device.address == "proxy"
     assert len(candidates) == 1
+
+async def test_scan_unprovisioned_reports_advertisement_before_scan_finishes():
+    uuid = bytes.fromhex("00112233445566778899aabbccddeeff")
+    scanner = CallbackScanner(fresh={"new": (device("new"), advertisement({PROV_SERVICE: uuid + bytes(2)}))})
+    discovered = []
+    task = asyncio.create_task(sphere_transport.scan_unprovisioned(
+        scanner, timeout=10, on_discovered=discovered.append,
+    ))
+    await asyncio.sleep(0)
+    assert [entry.uuid for entry in discovered] == [uuid]
+    assert not task.done()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert scanner.callback is None
+    assert not scanner.running

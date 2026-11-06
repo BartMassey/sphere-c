@@ -280,6 +280,61 @@ async def test_effect_get_returns_current_vendor_snapshot():
     assert result["work_mode"] is None
     assert result["effect_active"] is None
     assert result["work_mode_source"] is None
+    assert result["effect_source"] == "readback"
+
+
+@pytest.mark.parametrize("mode", range(5))
+async def test_effect_get_reports_bare_snapshot_mode_as_readback(mode):
+    node = Mock(received=deque())
+
+    async def request(*args, **kwargs):
+        responses = [message(OP_TUYA_DP_DATA, bytes([mode]))]
+        responses.extend(message(OP_TUYA_DP_DATA, bytes.fromhex(params))
+                         for params in ("01070200000000", "01650200000000",
+                                        "01660402", "01670200000064", "01680100"))
+        node.received.extend(responses)
+        return responses[0]
+
+    node.request = AsyncMock(side_effect=request)
+    service, _ = runtime(node)
+    result = await service.handle("effect.get", {})
+    assert result["work_mode"] == mode
+    assert result["work_mode_source"] == "readback"
+    assert result["effect_active"] is (mode == 1)
+    assert result["snapshot"]["work_mode"] == mode
+    assert result["snapshot"]["work_mode_encoding"] == "bare_snapshot"
+    assert result["snapshot"]["missing_dp_ids"] == []
+    assert 2 not in [record["id"] for record in result["snapshot"]["datapoints"]]
+
+
+async def test_effect_empty_read_uses_acknowledged_selection_without_reporting_it():
+    node = Mock(received=deque())
+    node.request = AsyncMock(return_value=message(OP_TUYA_DP_DATA, b"\x01"))
+    service, _ = runtime(node)
+
+    await service.handle("effect.activate", {"name": "aurora"})
+    result = await service.handle("effect.get", {})
+    assert result["effect"]["slug"] == "aurora"
+    assert result["effect_source"] == "cached"
+    assert result["effect_active"] is True
+    assert result["snapshot"]["missing_dp_ids"] == [2, 102]
+    assert result["verification"]["response_reported_value"] is False
+    assert result["verification"]["independent_readback"] is True
+
+
+async def test_uncertain_effect_write_invalidates_previous_selection():
+    node = Mock(received=deque())
+    node.request = AsyncMock(side_effect=[
+        message(OP_TUYA_DP_DATA, b"\x01"), TimeoutError(),
+        message(OP_TUYA_DP_DATA, b"\x01"),
+    ])
+    service, _ = runtime(node)
+    await service.handle("effect.set", {"name": "aurora"})
+    with pytest.raises(ApiRequestError):
+        await service.handle("effect.set", {"name": "colour_7"})
+    result = await service.handle("effect.get", {})
+    assert result["effect"] is None
+    assert result["effect_source"] is None
 
 
 async def test_effect_get_reports_mode_and_keeps_last_acknowledged_mode():

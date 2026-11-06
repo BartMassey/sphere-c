@@ -53,6 +53,8 @@ class TuyaDpRecord:
 class TuyaDpData:
     command_type: int
     records: tuple[TuyaDpRecord, ...]
+    # Stock Sphere READ snapshots carry mode outside the typed records.
+    work_mode: int | None = None
 
 
 class VendorUnsupported(RuntimeError):
@@ -323,7 +325,9 @@ class TuyaVendorController:
         self._response_settle = response_settle
 
     async def read(self, dp_ids: list[int] | tuple[int, ...]) -> TuyaDpData:
-        return await self._request(tuya_dp_read(dp_ids), "Read")
+        return await self._request(
+            tuya_dp_read(dp_ids), "Read", expected_dp_ids=frozenset(dp_ids)
+        )
 
     async def write(self, values: dict[int, int]) -> TuyaDpData:
         return await self._request(
@@ -346,7 +350,8 @@ class TuyaVendorController:
         received = self._node.received
         # Retain old messages so deque eviction cannot recycle their IDs.
         previous_messages = {id(message): message for message in received}
-        deadline = asyncio.get_running_loop().time() + self._timeout
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self._timeout
         try:
             response = await self._node.request(
                 address,
@@ -359,6 +364,10 @@ class TuyaVendorController:
             raise VendorUnavailable(
                 f"Sphere element {address:#06x} did not answer vendor DP {operation}"
             ) from exc
+        if operation == "Read":
+            # The first reply can be bare work mode, followed by five
+            # separately transmitted records. Give that burst its own budget.
+            deadline = loop.time() + self._timeout
         await asyncio.sleep(self._response_settle)
         while True:
             messages = [
@@ -382,11 +391,39 @@ class TuyaVendorController:
                     if not data.records
                     or any(record.dp_id in expected_dp_ids for record in data.records)
                 ]
+            remaining = deadline - loop.time()
             if parsed:
                 command_type = parsed[-1].command_type
                 records = tuple(record for data in parsed for record in data.records)
-                return TuyaDpData(command_type, records)
-            remaining = deadline - asyncio.get_running_loop().time()
+                returned_ids = {record.dp_id for record in records}
+                work_mode = None
+                # Confirm the product snapshot before interpreting its bare
+                # first byte. An isolated 01 can also be a write ACK.
+                snapshot_signature = (
+                    (7, TuyaDpType.VALUE), (101, TuyaDpType.VALUE),
+                    (102, TuyaDpType.ENUM), (103, TuyaDpType.VALUE),
+                    (104, TuyaDpType.BOOL),
+                )
+                bare = messages[0].params
+                if (
+                    operation == "Read"
+                    and len(bare) == 1 and bare[0] <= 4
+                    and tuple((record.dp_id, record.dp_type) for record in records)
+                    == snapshot_signature
+                    and all(data.command_type == 1 for data in parsed)
+                ):
+                    work_mode = bare[0]
+                typed_expected = expected_dp_ids - {2}
+                complete = (
+                    bool(expected_dp_ids) and expected_dp_ids <= returned_ids
+                ) or (
+                    bool(typed_expected) and typed_expected <= returned_ids
+                ) or {7, 101, 102, 103, 104} <= returned_ids
+                if operation == "Read" and 2 in expected_dp_ids:
+                    if len(bare) == 1 and bare[0] <= 4:
+                        complete = complete and (work_mode is not None or 2 in returned_ids)
+                if operation == "Write" or complete or remaining <= 0:
+                    return TuyaDpData(command_type, records, work_mode)
             if remaining <= 0:
                 raise AccessError(
                     f"vendor {operation} received no supported DATA response"
