@@ -442,6 +442,31 @@ async def test_pending_uuid_is_not_reprovisioned_and_recovery_backs_off(manager,
     assert len(manager.state["devices"]) == 1
 
 
+@pytest.mark.parametrize("require_names", [False, True])
+async def test_forgotten_pending_device_can_be_enrolled_again(manager, require_names):
+    target = beacon()
+    manager._checkpoint(0x100, SimpleNamespace(capabilities=SimpleNamespace(num_elements=6),
+                                            device_key=b"k" * 16), target)
+    manager.state["devices"]["0x0100"]["forgotten"] = True
+    manager._deadline = manager._now() + 30
+    manager._require_names = require_names
+    manager._discovered(target)
+    item = manager._candidates[target.uuid.hex()]
+    assert item["state"] == "found"
+    assert item["existing_device"] is None
+    if require_names:
+        item["state"] = "awaiting_name"
+        manager._task = asyncio.create_task(asyncio.sleep(30))
+        try:
+            manager.name(target.uuid.hex(), "Returned Sphere")
+            assert item["state"] == "queued"
+        finally:
+            manager._task.cancel()
+            await asyncio.gather(manager._task, return_exceptions=True)
+    assert manager.state["next_unicast"] == 0x106
+    assert manager.state["devices"]["0x0100"]["forgotten"]
+
+
 async def test_whole_window_radio_lease_survives_multiple_scans_and_restores_on_stop(manager, monkeypatch):
     events, scans = [], []
 

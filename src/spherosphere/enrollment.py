@@ -440,6 +440,7 @@ class EnrollmentManager:
                 or identity in self._candidates):
             return
         if any(entry.get("enrollment_pending") and not entry.get("superseded_by")
+               and not entry.get("forgotten")
                and (entry.get("uuid") == identity or
                     entry.get("address", "").lower() == beacon.device.address.lower())
                for entry in self.state["devices"].values()):
