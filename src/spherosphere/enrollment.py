@@ -35,6 +35,7 @@ MODEL = "00002a24-0000-1000-8000-00805f9b34fb"
 PRODUCT_ID = bytes.fromhex("6430647067613068")
 REVISION_05 = bytes.fromhex("00003035303514100002")
 ROOT_METADATA = ("composition", "control_model", "official_config_complete")
+PROXY_IDENTITY_PREFERENCE_SECONDS = 2.0
 
 
 def sphere_uuid(uuid: bytes) -> bool:
@@ -130,6 +131,7 @@ class EnrollmentManager:
         self._candidate_retry_at: dict[str, float] = {}
         self._retry_at: dict[int, float] = {}
         self._retry_count: dict[int, int] = {}
+        self._failed_proxy_addresses: dict[int, str] = {}
 
     def _now(self) -> float:
         return asyncio.get_running_loop().time()
@@ -268,8 +270,11 @@ class EnrollmentManager:
         entry = self.state["devices"][key]
         started = self._now()
         stage = "Mesh Proxy scan"
+        failed_proxy = self._failed_proxy_addresses.get(address)
         logger.info("looking for Mesh Proxy for %s at %s (provisioning_complete=%s)",
                     entry.get("address"), key, bool(entry.get("provisioning_complete")))
+        if failed_proxy is not None:
+            logger.info("deprioritizing Mesh Proxy %s for %s after prior failure", failed_proxy, key)
         scanner = self.transport.scanner()
         session = None
         config_state = dict(self.state)
@@ -280,26 +285,33 @@ class EnrollmentManager:
             proxy, candidates = await find_proxy_node(
                 scanner, k3(netkey), timeout=10, stop_after=False,
                 identity_netkey=netkey, node_addresses=(address,),
+                prefer_node_identity_for=PROXY_IDENTITY_PREFERENCE_SECONDS,
+                last_failed_address=failed_proxy,
             )
             if proxy is None:
                 logger.info("no matching Mesh Proxy for %s among %d advertising devices",
                             key, len(candidates))
                 raise RuntimeError("new node proxy not found")
             logger.info("matched Mesh Proxy for %s after %.2fs", key, self._now() - started)
-            stage = "Mesh Proxy connection"
-            session = await open_mesh_proxy_session(
-                self.transport, proxy.device, netkey=netkey,
-                appkey=bytes.fromhex(self.state["appkey"]),
-                device_key=bytes.fromhex(entry["device_key"]),
-                iv_index=self.state["iv_index"],
-                provisioner_addr=self.state["provisioner_addr"],
-                unicast=address, seq=self.state["seq"],
-                persist_seq=lambda value: self.store.advance_sequence(self.state, value),
-            )
-            logger.info("Mesh Proxy connected for %s after %.2fs", key, self._now() - started)
-            stage = "Mesh configuration"
-            await configure(session.node, address, bytes.fromhex(self.state["appkey"]),
-                            config_state, session.pump)
+            try:
+                stage = "Mesh Proxy connection"
+                session = await open_mesh_proxy_session(
+                    self.transport, proxy.device, netkey=netkey,
+                    appkey=bytes.fromhex(self.state["appkey"]),
+                    device_key=bytes.fromhex(entry["device_key"]),
+                    iv_index=self.state["iv_index"],
+                    provisioner_addr=self.state["provisioner_addr"],
+                    unicast=address, seq=self.state["seq"],
+                    persist_seq=lambda value: self.store.advance_sequence(self.state, value),
+                )
+                logger.info("Mesh Proxy connected for %s after %.2fs", key, self._now() - started)
+                stage = "Mesh configuration"
+                await configure(session.node, address, bytes.fromhex(self.state["appkey"]),
+                                config_state, session.pump)
+            except Exception:
+                self._failed_proxy_addresses[address] = proxy.device.address
+                raise
+            self._failed_proxy_addresses.pop(address, None)
             self._supersede(key)
             if self.state.get("active_device") is None:
                 self.state["active_device"] = key

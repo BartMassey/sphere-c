@@ -245,7 +245,7 @@ async def test_configure_does_not_save_new_metadata_as_old_device(manager, monke
     manager.transport.scanner = Scanner
 
     async def proxy(*args, **kwargs):
-        return SimpleNamespace(device=object()), []
+        return SimpleNamespace(device=beacon().device), []
 
     class Session:
         node, pump = object(), object()
@@ -290,7 +290,7 @@ async def test_configure_closes_radio_when_persistence_fails(manager, monkeypatc
     manager.transport.scanner = Scanner
 
     async def proxy(*args, **kwargs):
-        return SimpleNamespace(device=object()), []
+        return SimpleNamespace(device=beacon().device), []
 
     async def open_session(*args, **kwargs):
         return Session()
@@ -310,6 +310,55 @@ async def test_configure_closes_radio_when_persistence_fails(manager, monkeypatc
     with pytest.raises(expected):
         await manager._configure(0x100)
     assert cleanup == ["session", "scanner"]
+
+
+@pytest.mark.parametrize("failure_stage", ["connect", "configure"])
+async def test_enrollment_recovery_deprioritizes_the_last_failed_proxy(manager, monkeypatch, failure_stage):
+    target = beacon()
+    manager._checkpoint(0x100, SimpleNamespace(capabilities=SimpleNamespace(num_elements=6),
+                                            device_key=b"k" * 16), target)
+    attempted = []
+
+    class Scanner:
+        async def stop(self):
+            pass
+
+    class Session:
+        node, pump = object(), object()
+
+        async def close(self):
+            pass
+
+    async def find_proxy(*args, node_addresses, prefer_node_identity_for, last_failed_address, **kwargs):
+        assert node_addresses == (0x100,)
+        assert prefer_node_identity_for > 0
+        assert last_failed_address == (target.device.address if attempted else None)
+        device = SimpleNamespace(address="DC:23:52:09:A8:CF") if attempted else target.device
+        return SimpleNamespace(device=device), []
+
+    async def open_session(transport, device, *, unicast, **kwargs):
+        assert unicast == 0x100
+        attempted.append(device.address)
+        if len(attempted) == 1 and failure_stage == "connect":
+            raise TimeoutError()
+        return Session()
+
+    async def configure(node, address, key, working, pump):
+        if len(attempted) == 1 and failure_stage == "configure":
+            raise TimeoutError()
+        working["official_config_complete"] = True
+
+    manager.transport.scanner = Scanner
+    monkeypatch.setattr(module, "find_proxy_node", find_proxy)
+    monkeypatch.setattr(module, "open_mesh_proxy_session", open_session)
+    monkeypatch.setattr(module, "configure", configure)
+    with pytest.raises(TimeoutError):
+        await manager._configure(0x100)
+    assert manager.state["devices"]["0x0100"]["enrollment_pending"]
+    await manager._configure(0x100)
+    assert attempted == [target.device.address, "DC:23:52:09:A8:CF"]
+    assert manager.state["devices"]["0x0100"]["official_config_complete"]
+    assert manager._failed_proxy_addresses == {}
 
 
 async def test_ambiguous_data_transfer_recovers_saved_key_before_new_provision(manager, monkeypatch):

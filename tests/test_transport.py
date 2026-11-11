@@ -618,6 +618,66 @@ async def test_find_proxy_node_matches_verified_node_identity():
     assert match.device.address == "proxy"
     assert len(candidates) == 1
 
+
+@pytest.mark.parametrize("preference, last_failed, expected", [
+    (0, None, "other"),
+    (0.01, None, "target"),
+    (0.01, "target", "other"),
+    (0.01, "other", "target"),
+])
+async def test_proxy_selection_with_two_matching_advertisements(preference, last_failed, expected):
+    netkey = bytes(range(16))
+    identity = bytes.fromhex("f8613f325ed3b78e0011223344556677")
+    network_id = bytes(8)
+    scanner = CallbackScanner(fresh={
+        "other": (device("other"), advertisement({PROXY_SERVICE: b"\x00" + network_id})),
+        "target": (device("target"), advertisement({PROXY_SERVICE: b"\x01" + identity})),
+    })
+
+    match, _ = await sphere_transport.find_proxy_node(
+        scanner, network_id, timeout=0.1, identity_netkey=netkey,
+        node_addresses=(0x1201,), prefer_node_identity_for=preference,
+        last_failed_address=last_failed,
+    )
+
+    assert match.device.address == expected
+
+
+async def test_proxy_selection_waits_for_a_later_target_advertisement():
+    network_id = bytes(8)
+    identity = bytes.fromhex("f8613f325ed3b78e0011223344556677")
+
+    class StaggeredScanner(CallbackScanner):
+        async def start(self):
+            await super().start()
+            asyncio.get_running_loop().call_soon(
+                self.callback, device("target"), advertisement({PROXY_SERVICE: b"\x01" + identity}),
+            )
+
+    scanner = StaggeredScanner(fresh={
+        "other": (device("other"), advertisement({PROXY_SERVICE: b"\x00" + network_id})),
+    })
+    match, _ = await sphere_transport.find_proxy_node(
+        scanner, network_id, timeout=0.1, poll_interval=0.001,
+        identity_netkey=bytes(range(16)), node_addresses=(0x1201,),
+        prefer_node_identity_for=0.05,
+    )
+    assert match.device.address == "target"
+
+
+@pytest.mark.parametrize("last_failed", [None, "only"])
+async def test_proxy_selection_can_use_the_only_available_proxy(last_failed):
+    network_id = bytes(8)
+    scanner = CallbackScanner(fresh={
+        "only": (device("only"), advertisement({PROXY_SERVICE: b"\x00" + network_id})),
+    })
+    match, _ = await sphere_transport.find_proxy_node(
+        scanner, network_id, timeout=0, prefer_node_identity_for=2,
+        last_failed_address=last_failed,
+    )
+    assert match.device.address == "only"
+
+
 async def test_scan_unprovisioned_reports_advertisement_before_scan_finishes():
     uuid = bytes.fromhex("00112233445566778899aabbccddeeff")
     scanner = CallbackScanner(fresh={"new": (device("new"), advertisement({PROV_SERVICE: uuid + bytes(2)}))})

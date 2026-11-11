@@ -115,8 +115,11 @@ Pre-provisioning connection failures receive up to three
 attempts per window. After network data might have reached the
 light, recovery uses its saved DeviceKey and reserved address
 instead of creating another identity. A later enrollment window
-can retry unfinished configuration. Ordinary light controls
-pause for the enrollment window.
+can retry unfinished configuration. During configuration, the
+daemon briefly prefers the target's verified Node Identity
+before using another proxy on the same network. A retry prefers
+a different proxy when one is available. Ordinary light
+controls pause for the enrollment window.
 
 ### Automatic enrollment and local forgetting
 

@@ -226,14 +226,19 @@ async def find_proxy_node(
     stop_after: bool = True,
     identity_netkey: bytes | None = None,
     node_addresses: tuple[int, ...] = (),
+    prefer_node_identity_for: float = 0.0,
+    last_failed_address: str | None = None,
 ):
+    """Find a matching proxy, optionally giving a verified identity time to appear."""
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
     candidates = {}
+    fallback_deadline = None
     discoveries, remove_callback = _fresh_discoveries(scanner)
     await scanner.start()
     try:
         while True:
+            selected = fallback = last_resort = None
             for candidate in proxy_candidates_from_discoveries(discoveries):
                 if candidate.device.address not in candidates:
                     if candidate.identification_type == IDENTIFICATION_NODE_IDENTITY:
@@ -249,13 +254,11 @@ async def find_proxy_node(
                             candidate.parameter.hex(),
                         )
                 candidates[candidate.device.address] = candidate
-                if (
+                network_match = (
                     candidate.identification_type == IDENTIFICATION_NETWORK_ID
                     and candidate.parameter == network_id
-                ):
-                    logger.info("selected Mesh Proxy %s by Network ID", candidate.device.address)
-                    return candidate, list(candidates.values())
-                if (
+                )
+                identity_match = (
                     candidate.identification_type == IDENTIFICATION_NODE_IDENTITY
                     and identity_netkey is not None
                     and any(
@@ -264,15 +267,34 @@ async def find_proxy_node(
                         )
                         for address in node_addresses
                     )
-                ):
-                    logger.info(
-                        "selected Mesh Proxy %s by verified Node Identity",
-                        candidate.device.address,
-                    )
-                    return candidate, list(candidates.values())
-            if loop.time() >= deadline:
+                )
+                if not network_match and not identity_match:
+                    continue
+                if candidate.device.address == last_failed_address:
+                    last_resort = candidate
+                elif prefer_node_identity_for > 0 and not identity_match:
+                    if fallback is None:
+                        fallback = candidate
+                else:
+                    selected = candidate
+                    break
+            now = loop.time()
+            wake_at = deadline
+            if selected is None and (fallback is not None or last_resort is not None):
+                if fallback_deadline is None:
+                    fallback_deadline = min(deadline, now + prefer_node_identity_for)
+                if now >= fallback_deadline:
+                    selected = fallback if fallback is not None else last_resort
+                wake_at = fallback_deadline
+            if selected is not None:
+                match_type = ("verified Node Identity"
+                              if selected.identification_type == IDENTIFICATION_NODE_IDENTITY
+                              else "Network ID")
+                logger.info("selected Mesh Proxy %s by %s", selected.device.address, match_type)
+                return selected, list(candidates.values())
+            if now >= deadline:
                 return None, list(candidates.values())
-            await asyncio.sleep(poll_interval)
+            await asyncio.sleep(min(poll_interval, wake_at - now))
     finally:
         if remove_callback is not None:
             remove_callback()
