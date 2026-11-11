@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from bleak.exc import BleakDBusError
 from spherosphere import enrollment as module
 from spherosphere import provision as provisioning
 from spherosphere.state import StateStore
@@ -145,8 +146,9 @@ async def test_configuration_failure_keeps_recovery_record(manager, monkeypatch)
 
 
 @pytest.mark.parametrize("complete", [True, False])
-async def test_provisioning_checkpoint_precedes_data_transmission(manager, monkeypatch, complete):
+async def test_provisioning_checkpoint_precedes_data_transmission(manager, monkeypatch, caplog, complete):
     sent = []
+    caplog.set_level("INFO", logger="spherosphere-provision")
 
     class Pump:
         def __init__(self, *args):
@@ -206,6 +208,27 @@ async def test_provisioning_checkpoint_precedes_data_transmission(manager, monke
     assert saved["devices"]["0x0100"]["provisioning_complete"] is complete
     assert saved["devices"]["0x0100"]["device_key"] == (b"k" * 16).hex()
     assert saved["next_unicast"] == 0x106
+    assert "saved recovery record" in caplog.text
+    assert ("received Provisioning Complete" in caplog.text) is complete
+    assert "encrypted" not in caplog.text
+    assert (b"k" * 16).hex() not in caplog.text
+
+
+@pytest.mark.parametrize("name, detail, expected", [
+    ("org.bluez.Error.Failed", "le-connection-abort-by-local", "connection aborted locally"),
+    ("org.bluez.Error.Failed", "ATT error: 0x0e", "ATT error 0x0e"),
+    ("org.bluez.Error.Failed", "secret packet bytes", "org.bluez.Error.Failed"),
+    ("org.bluez.Error.secret", "secret packet bytes", "unrecognized D-Bus error"),
+])
+def test_enrollment_logs_only_safe_bluetooth_error_details(manager, caplog, name, detail, expected):
+    failure = module.BearerError("secret wrapper text")
+    failure.__cause__ = BleakDBusError(name, [detail])
+    manager._error(beacon().device.address, failure)
+    assert expected in caplog.text
+    assert "secret" not in caplog.text
+    assert manager.status()["errors"] == [{
+        "address": beacon().device.address, "error": "BearerError",
+    }]
 
 
 async def test_configure_does_not_save_new_metadata_as_old_device(manager, monkeypatch):

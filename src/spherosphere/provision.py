@@ -79,6 +79,7 @@ from .lighting import (
 )
 from .transport import (
     LocalTransport,
+    bluetooth_error_summary,
     disconnect_quietly,
     find_proxy_node,
     open_gatt_session,
@@ -387,7 +388,10 @@ async def provision(
                     "(use --device-uuid to override)"
                 )
 
-    print(f"Connecting PB-GATT to {target.device.address}...")
+    address = target.device.address
+    started = time.monotonic()
+    logger.info("opening PB-GATT provisioning connection for %s", address)
+    print(f"Connecting PB-GATT to {address}...")
     # The real handler is installed once the session objects exist below; the
     # lamp sends nothing before our Provisioning Invite, so nothing is lost.
     session_handler: list = []
@@ -402,9 +406,14 @@ async def provision(
         client, bearer = await open_gatt_session(
             transport, target.device, provisioning=True, on_message=dispatch
         )
+    except Exception as exc:
+        logger.warning("PB-GATT setup failed for %s after %.2fs (%s)",
+                       address, time.monotonic() - started, bluetooth_error_summary(exc))
+        raise
     finally:
         if scanner is not None:
             await scanner.stop()
+    logger.info("PB-GATT ready for %s after %.2fs", address, time.monotonic() - started)
     pump = BearerPump(bearer, MSG_TYPE_PROVISIONING_PDU)
 
     unicast = state["next_unicast"]
@@ -415,6 +424,8 @@ async def provision(
         # and reserve its entire element span before it can leave this host.
         if payload[0] == 0x07 and checkpoint is not None:
             checkpoint(unicast, prov, target)
+            logger.info("saved recovery record for %s at 0x%04x before Provisioning Data (%.2fs)",
+                        address, unicast, time.monotonic() - started)
         pump.put(payload)
 
     prov = Provisioner(
@@ -433,7 +444,12 @@ async def provision(
         errors.append(exc)
         done.set()
 
-    prov.on_done = done.set
+    def complete() -> None:
+        logger.info("received Provisioning Complete from %s after %.2fs",
+                    address, time.monotonic() - started)
+        done.set()
+
+    prov.on_done = complete
     pump.on_error = fail
 
     def on_message(msg_type: int, payload: bytes) -> None:
@@ -471,6 +487,11 @@ async def provision(
                     _provisioning_causes(str(exc)),
                 ) from exc
             raise exc
+    except Exception as exc:
+        logger.warning("PB-GATT handshake failed for %s in %s after %.2fs (%s)",
+                       address, prov.state.name, time.monotonic() - started,
+                       bluetooth_error_summary(exc))
+        raise
     finally:
         await pump.stop()
         await bearer.stop()

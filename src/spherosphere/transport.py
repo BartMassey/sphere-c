@@ -8,6 +8,7 @@ import re
 from collections.abc import Callable
 from typing import Any
 
+from bleak.exc import BleakDBusError, BleakError
 from btmesh.bearer import (
     IDENTIFICATION_NETWORK_ID,
     IDENTIFICATION_NODE_IDENTITY,
@@ -38,6 +39,53 @@ from btmesh.pump import BearerPump
 logger = logging.getLogger("spherosphere-transport")
 
 GATT_SESSION_ATTEMPTS = 3
+BLUEZ_ERROR_NAMES = frozenset(f"org.bluez.Error.{name}" for name in (
+    "AlreadyConnected", "ConnectionAttemptFailed", "DoesNotExist", "Failed",
+    "InProgress", "InvalidArguments", "InvalidValueLength", "NotAuthorized",
+    "NotConnected", "NotPermitted", "NotReady", "NotSupported",
+))
+DBUS_ERROR_NAMES = BLUEZ_ERROR_NAMES | frozenset(
+    f"org.freedesktop.DBus.Error.{name}" for name in (
+        "AccessDenied", "Disconnected", "NoReply", "ServiceUnknown",
+        "UnknownMethod", "UnknownObject",
+    )
+)
+DBUS_ERROR_REASONS = {
+    "le-connection-abort-by-local": "connection aborted locally",
+    "software caused connection abort": "software caused connection abort",
+    "service discovery has not been performed yet": "services unresolved",
+    "not connected": "not connected",
+}
+
+
+def bluetooth_error_summary(exc: BaseException) -> str:
+    """Summarize a Bluetooth failure without copying free-form error text."""
+    summary = type(exc).__name__
+    current = exc
+    for _ in range(8):
+        if isinstance(current, BleakDBusError):
+            name = current.dbus_error
+            if name not in DBUS_ERROR_NAMES:
+                name = "unrecognized D-Bus error"
+            body = current.args[1] if len(current.args) > 1 else None
+            reason = None
+            if isinstance(body, str):
+                reason = DBUS_ERROR_REASONS.get(body.casefold())
+                att_error = re.fullmatch(r"ATT error: (0x[0-9a-fA-F]{2})", body)
+                if att_error:
+                    reason = f"ATT error {att_error[1]}"
+            return f"{summary} [{name}]" + (f" ({reason})" if reason else "")
+        if isinstance(current, BleakError) and current.args and isinstance(current.args[0], str):
+            reason = DBUS_ERROR_REASONS.get(current.args[0].casefold())
+            if reason:
+                return f"{summary} ({reason})"
+        cause = current.__cause__
+        if cause is None and not current.__suppress_context__:
+            cause = current.__context__
+        if cause is None:
+            break
+        current = cause
+    return summary
 
 
 def node_identity_matches(
@@ -205,6 +253,7 @@ async def find_proxy_node(
                     candidate.identification_type == IDENTIFICATION_NETWORK_ID
                     and candidate.parameter == network_id
                 ):
+                    logger.info("selected Mesh Proxy %s by Network ID", candidate.device.address)
                     return candidate, list(candidates.values())
                 if (
                     candidate.identification_type == IDENTIFICATION_NODE_IDENTITY
@@ -217,7 +266,7 @@ async def find_proxy_node(
                     )
                 ):
                     logger.info(
-                        "verified Node Identity from %s",
+                        "selected Mesh Proxy %s by verified Node Identity",
                         candidate.device.address,
                     )
                     return candidate, list(candidates.values())

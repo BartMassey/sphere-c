@@ -18,9 +18,9 @@ from types import SimpleNamespace
 from btmesh.crypto import k3
 from btmesh.bearer import BearerError
 
-from .provision import configure, provision
+from .provision import Phase0Failure, configure, provision
 from .transport import (
-    disconnect_quietly, find_proxy_node, open_mesh_proxy_session,
+    bluetooth_error_summary, disconnect_quietly, find_proxy_node, open_mesh_proxy_session,
     scan_unprovisioned,
     watch_unprovisioned,
 )
@@ -172,6 +172,7 @@ class EnrollmentManager:
         self._candidate_attempts = {}
         self._candidate_retry_at = {}
         self._phase = "scanning"
+        logger.info("enrollment window started for %.1fs", duration)
         self._task = asyncio.create_task(self._run())
         return self.status()
 
@@ -265,6 +266,10 @@ class EnrollmentManager:
     async def _configure(self, address: int) -> None:
         key = f"0x{address:04x}"
         entry = self.state["devices"][key]
+        started = self._now()
+        stage = "Mesh Proxy scan"
+        logger.info("looking for Mesh Proxy for %s at %s (provisioning_complete=%s)",
+                    entry.get("address"), key, bool(entry.get("provisioning_complete")))
         scanner = self.transport.scanner()
         session = None
         config_state = dict(self.state)
@@ -272,12 +277,16 @@ class EnrollmentManager:
             config_state.pop(field, None)
         try:
             netkey = bytes.fromhex(self.state["netkey"])
-            proxy, _ = await find_proxy_node(
+            proxy, candidates = await find_proxy_node(
                 scanner, k3(netkey), timeout=10, stop_after=False,
                 identity_netkey=netkey, node_addresses=(address,),
             )
             if proxy is None:
+                logger.info("no matching Mesh Proxy for %s among %d advertising devices",
+                            key, len(candidates))
                 raise RuntimeError("new node proxy not found")
+            logger.info("matched Mesh Proxy for %s after %.2fs", key, self._now() - started)
+            stage = "Mesh Proxy connection"
             session = await open_mesh_proxy_session(
                 self.transport, proxy.device, netkey=netkey,
                 appkey=bytes.fromhex(self.state["appkey"]),
@@ -287,6 +296,8 @@ class EnrollmentManager:
                 unicast=address, seq=self.state["seq"],
                 persist_seq=lambda value: self.store.advance_sequence(self.state, value),
             )
+            logger.info("Mesh Proxy connected for %s after %.2fs", key, self._now() - started)
+            stage = "Mesh configuration"
             await configure(session.node, address, bytes.fromhex(self.state["appkey"]),
                             config_state, session.pump)
             self._supersede(key)
@@ -301,6 +312,11 @@ class EnrollmentManager:
             entry["provisioning_complete"] = True
             self._results.append({"device": key, "name": entry["name"],
                                   "firmware_version": entry.get("firmware_version")})
+        except Exception as exc:
+            operation = exc.phase if isinstance(exc, Phase0Failure) else stage
+            logger.warning("%s failed for %s after %.2fs (%s)",
+                           operation, key, self._now() - started, bluetooth_error_summary(exc))
+            raise
         finally:
             try:
                 original_error = sys.exception()
@@ -309,7 +325,7 @@ class EnrollmentManager:
                 except Exception as exc:
                     if original_error is None:
                         raise
-                    logger.warning("enrollment persistence failed (%s)", type(exc).__name__)
+                    logger.warning("enrollment persistence failed for %s (%s)", key, type(exc).__name__)
             finally:
                 # Persistence failure must not strand a GATT connection or
                 # scanner. Preserve the operational/persistence exception if
@@ -324,9 +340,11 @@ class EnrollmentManager:
                         if pending_error is None and cleanup_error is None:
                             cleanup_error = exc
                         else:
-                            logger.warning("enrollment cleanup failed (%s)", type(exc).__name__)
+                            logger.warning("enrollment cleanup failed for %s (%s)",
+                                           key, bluetooth_error_summary(exc))
                 if cleanup_error is not None:
                     raise cleanup_error
+        logger.info("finished Mesh configuration for %s after %.2fs", key, self._now() - started)
 
     def _supersede(self, key: str) -> None:
         entry = self.state["devices"][key]
@@ -367,6 +385,8 @@ class EnrollmentManager:
                 if item["state"] == "queued":
                     item["state"] = "awaiting_name"
             self._phase = "idle"
+            logger.info("enrollment window ended (discovered=%d, enrolled=%d, errors=%d)",
+                        len(self._candidates), len(self._results), len(self._errors))
 
     async def _commission_with_scan(self, identity: str, item: dict) -> bool:
         """Refresh the BLE object and keep discovery alive through GATT handoff.
@@ -454,6 +474,7 @@ class EnrollmentManager:
             "name": existing[1].get("name", "") if existing else self._name(beacon),
             "existing_device": existing[0] if existing else None, "state": "found",
         }
+        logger.info("found Sphere advertising for provisioning at %s", beacon.device.address)
 
     async def _run_passes(self) -> None:
         try:
@@ -584,6 +605,7 @@ class EnrollmentManager:
     def _error(self, address, exc) -> None:
         # Some provisioning exceptions include cryptographic values. Public
         # progress contains only type and device address, never exception text.
-        logger.warning("enrollment attempt failed for %s (%s)", address, type(exc).__name__)
+        logger.warning("enrollment %s failed for %s (%s)",
+                       self._phase, address, bluetooth_error_summary(exc))
         self._errors.append({"address": address, "error": type(exc).__name__})
         self._errors = self._errors[-20:]

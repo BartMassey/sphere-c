@@ -590,6 +590,21 @@ Check the light's charge, power and range, and keep phone
 Bluetooth disabled while diagnosing competing connections.
 Do not delete state to troubleshoot a connection.
 
+To follow an enrollment attempt, run these in separate terminals
+before starting discovery:
+
+```sh
+journalctl --user -u spherosphere.service -f -o short-iso
+journalctl -u bluetooth.service -f -o short-iso
+```
+
+The daemon logs provisioning milestones, the selected Mesh
+Proxy address and match type, setup timings, and recognized
+D-Bus error codes at the default log level. These entries omit
+keys and raw packet data. A saved recovery record can precede
+Provisioning Complete, so check the subsequent Proxy and
+configuration entries to see what finished.
+
 For command tracing, set `verbose = true` and restart, or stop
 the user service and run `spherosphered --verbose`. JSON lines
 show accepted operations, elapsed times, decoded replies and
