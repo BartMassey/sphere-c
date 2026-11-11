@@ -39,6 +39,13 @@ python3 -m venv ~/.local/share/spherosphere/venv
 python -m pip install '.[gui]'
 ```
 
+The optional `old/` submodule contains private research. A
+normal clone leaves it unpopulated; it is not needed to build,
+install, or run Spherosphere. Avoid `--recurse-submodules`
+unless you have access to `spherosphere-internals`: Git will
+report an access error when it tries to fetch that repository.
+The public source checkout remains usable after that error.
+
 The installation includes the Qt desktop dependencies. It needs
 network access to fetch dependencies, including a pinned Git
 dependency. The installed application does not require the

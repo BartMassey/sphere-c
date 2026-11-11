@@ -16,7 +16,8 @@ dist/
 *.key
 *.pem
 
-# Acquired application and package artifacts
+# Private internals; prevents accidental plain-file imports.
+# The submodule gitlink, once registered, is tracked separately.
 old/
 
 # Bluetooth Mesh runtime state, captures, logs, and secrets

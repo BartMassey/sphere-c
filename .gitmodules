@@ -1,0 +1,3 @@
+[submodule "spherosphere-internals"]
+	path = old
+	url = git@github.com:BartMassey/spherosphere-internals.git

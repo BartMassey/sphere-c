@@ -758,11 +758,16 @@ firmware revision reader, and targeted probes remain available:
 - `packaging/`: desktop assets, systemd unit, and profiles.
 - `state/`: ignored research captures and logs from development;
   it is no longer the default live Mesh state directory.
-- `old/`: ignored APKs, firmware, original videos, and other
-  acquired or archival evidence.
+- `old/`: optional private `spherosphere-internals` submodule
+  for research, recovered source and LFS artifact snapshots.
+  Access requires permission to the private repository; public
+  installs and CI do not require this checkout.
 
 Keep key-bearing state, phone exports, firmware images, raw
-captures, and original videos out of Git. Recorded preview
+captures, and original videos out of the public repository.
+Private archival artifacts are retained in the internals
+repository's LFS snapshots. Live device state stays outside
+both repositories. Recorded preview
 assets are separately licensed and tracked; see
 [asset provenance](../packaging/desktop/ASSETS.md).
 
